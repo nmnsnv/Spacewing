@@ -1,0 +1,11 @@
+# Spacewing: native macOS Spaces. Empty strings disable shortcuts.
+[shortcuts]
+left = "ctrl+shift+option+left"
+right = "ctrl+shift+option+right"
+drag_left = "ctrl+shift+cmd+left"
+drag_right = "ctrl+shift+cmd+right"
+
+# Option+Tab switches individual windows. Shift reverses; Escape cancels.
+[switcher]
+enabled = true
+scope = "current-desktop" # Or "all-desktops".

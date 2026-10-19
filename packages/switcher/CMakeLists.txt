@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.25)
+project(SpacewingSwitcher VERSION 0.1.0 LANGUAGES CXX)
+
+add_library(spacewing_switcher_model STATIC src/session.cc)
+add_library(Spacewing::SwitcherModel ALIAS spacewing_switcher_model)
+target_include_directories(spacewing_switcher_model PUBLIC src)
+target_compile_features(spacewing_switcher_model PUBLIC cxx_std_20)
+target_compile_options(spacewing_switcher_model PRIVATE -Wall -Wextra -Wpedantic)
+
+if(APPLE)
+    if(NOT TARGET Spacewing::SharedMacOS)
+        add_subdirectory(../shared "${CMAKE_CURRENT_BINARY_DIR}/shared")
+    endif()
+    enable_language(OBJCXX)
+    add_library(spacewing_switcher STATIC src/service.mm)
+    add_library(Spacewing::Switcher ALIAS spacewing_switcher)
+    set_target_properties(spacewing_switcher PROPERTIES
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(spacewing_switcher PRIVATE -fobjc-arc -Wall -Wextra -Wpedantic)
+    target_link_libraries(spacewing_switcher PUBLIC Spacewing::SwitcherModel
+        Spacewing::SharedMacOS)
+    if(PROJECT_IS_TOP_LEVEL)
+        add_executable(spacewing-switcher src/main.mm)
+        set_target_properties(spacewing-switcher PROPERTIES
+            OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+        target_compile_options(spacewing-switcher PRIVATE -fobjc-arc -Wall -Wextra)
+        target_link_libraries(spacewing-switcher PRIVATE Spacewing::Switcher)
+    endif()
+endif()
+
+if(PROJECT_IS_TOP_LEVEL)
+    include(CTest)
+endif()
+if(BUILD_TESTING)
+    add_executable(switcher_tests tests/session_tests.cc)
+    target_link_libraries(switcher_tests PRIVATE Spacewing::SwitcherModel)
+    add_test(NAME switcher COMMAND switcher_tests)
+endif()
