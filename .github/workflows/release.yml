@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# Serialize releases, including manual and tag runs for the same app version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build and test release
+    uses: ./.github/workflows/ci.yml
+    with:
+      release: true
+
+  release:
+    name: Draft GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tested commit and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download tested app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Spacewing-macOS-universal
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          tag_exists=false
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            tag_exists=true
+            tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+            if [[ "$tag_commit" != "$RELEASE_COMMIT" ]]; then
+              echo '::error::Release tag points to a different commit. Bump the app version or run Release from that tag.'
+              exit 1
+            fi
+          fi
+          if is_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [[ "$is_draft" != true ]]; then
+              echo '::error::Release is already published; refusing to replace its assets.'
+              exit 1
+            fi
+          else
+            is_draft=false
+          fi
+          if [[ "$tag_exists" == false ]]; then
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_COMMIT" --silent
+          fi
+          if [[ "$is_draft" == true ]]; then
+            gh release upload "$RELEASE_TAG" Spacewing-macOS-universal.zip --clobber
+          else
+            gh release create "$RELEASE_TAG" Spacewing-macOS-universal.zip \
+              --draft --verify-tag --target "$RELEASE_COMMIT" --title "Spacewing $RELEASE_TAG" --generate-notes \
+              --notes 'Universal Mac development build. Ad-hoc signed; not notarized. See the README for Developer ID signing and notarization.'
+          fi
+          printf '[Review draft release](%s/%s/releases)\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
