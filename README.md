@@ -123,6 +123,35 @@ an exact binary's **cdhash**. The certificate-backed and notarization flows requ
 your signing identity and credentials; they have not been validated in the tool
 sandbox, which currently exposes no valid signing identities.
 
+## CI and releases
+
+[GitHub Actions](.github/workflows/ci.yml) builds and tests pull requests, pushes to
+**main**, and tags beginning with **v**. You can also run it manually from the Actions tab.
+It builds a Release app for Apple Silicon and Intel on macOS 15, runs the combined
+test suite, and separately builds and tests the workspace and switcher packages.
+Successful runs provide a **Spacewing-macOS-universal** artifact for 14 days. Download
+and extract the artifact, then extract the app ZIP inside it.
+
+Pushing a version tag such as **v0.1.0** also creates a draft GitHub Release with the
+tested app and generated release notes. Review it in GitHub Releases and publish
+when ready. Re-running a tag workflow updates an existing draft's ZIP; published
+release assets are never replaced by the workflow.
+
+Before tagging a new version, update **CMakeLists.txt**, **src/main.cc**,
+**resources/Info.plist.in**, and **resources/SettingsInfo.plist** together. The tag
+must match the app, helper, and CLI version exactly. After committing and pushing:
+
+~~~sh
+git tag -a v0.1.0 -m "Spacewing v0.1.0"
+git push origin v0.1.0
+~~~
+
+The workflow uses GitHub's built-in token and requires no extra secrets. Its app
+downloads use ad-hoc signing and are not notarized; they are development builds.
+Developer ID signing and Apple notarization described above remain the production
+distribution path. CI tests run without requesting Accessibility or moving windows;
+live switching still needs the manual checks under Validation.
+
 ## Configuration
 
 The default file is **~/.spacewing**, created on first launch if absent:

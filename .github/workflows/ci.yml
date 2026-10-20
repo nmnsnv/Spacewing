@@ -1,0 +1,122 @@
+name: CI / CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build and test macOS
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure universal Release build
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
+          -DBUILD_TESTING=ON
+          -DSPACEWING_CODESIGN_IDENTITY=-
+          -DSPACEWING_DISTRIBUTION=OFF
+
+      - name: Build app and tests
+        run: cmake --build build --parallel 3
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 60
+
+      - name: Build and test standalone packages
+        run: |
+          for package in workspace switcher; do
+            cmake -S "packages/$package" -B "build-$package" \
+              -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            cmake --build "build-$package" --parallel 3
+            ctest --test-dir "build-$package" --output-on-failure --no-tests=error --timeout 60
+          done
+
+      - name: Verify app signature and architectures
+        run: |
+          codesign --verify --deep --strict build/Spacewing.app
+          lipo build/Spacewing.app/Contents/MacOS/Spacewing -verify_arch arm64 x86_64
+          lipo build/Spacewing.app/Contents/Helpers/SpacewingSettings.app/Contents/MacOS/spacewing-settings \
+            -verify_arch arm64 x86_64
+
+      - name: Check release tag matches app version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          app_version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
+            build/Spacewing.app/Contents/Info.plist)
+          helper_version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
+            build/Spacewing.app/Contents/Helpers/SpacewingSettings.app/Contents/Info.plist)
+          if [[ "$RELEASE_TAG" != "v$app_version" || "$helper_version" != "$app_version" || \
+                "$(./build/spacewing --version)" != "spacewing $app_version" ]]; then
+            echo '::error::Release tag, app, settings helper, and CLI versions must match.'
+            exit 1
+          fi
+
+      - name: Archive app bundle
+        run: >-
+          ditto -c -k --sequesterRsrc --keepParent
+          build/Spacewing.app build/Spacewing-macOS-universal.zip
+
+      - name: Upload app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Spacewing-macOS-universal
+          path: build/Spacewing-macOS-universal.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Draft GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Spacewing-macOS-universal
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if is_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [[ "$is_draft" != true ]]; then
+              echo '::error::Release is already published; refusing to replace its assets.'
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" Spacewing-macOS-universal.zip --clobber
+          else
+            gh release create "$RELEASE_TAG" Spacewing-macOS-universal.zip \
+              --draft --verify-tag --title "Spacewing $RELEASE_TAG" --generate-notes \
+              --notes 'Universal Mac development build. Ad-hoc signed; not notarized. See the README for Developer ID signing and notarization.'
+          fi
