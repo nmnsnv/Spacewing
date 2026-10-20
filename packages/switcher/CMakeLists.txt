@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 project(SpacewingSwitcher VERSION 0.1.0 LANGUAGES CXX)
 
-add_library(spacewing_switcher_model STATIC src/session.cc)
+add_library(spacewing_switcher_model STATIC src/session.cc src/shortcut.cc)
 add_library(Spacewing::SwitcherModel ALIAS spacewing_switcher_model)
 target_include_directories(spacewing_switcher_model PUBLIC src)
 target_compile_features(spacewing_switcher_model PUBLIC cxx_std_20)

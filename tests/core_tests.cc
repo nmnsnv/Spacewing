@@ -92,13 +92,19 @@ void configuration() {
     check(!parseConfig(edited).shortcuts[1].enabled(), "GUI clear");
     check(defaults.switcher.enabled && defaults.switcher.scope == switcher::Scope::CurrentDesktop,
           "switcher defaults to current desktop");
+    check(defaults.switcher.shortcut.text() == "option+tab", "switcher default shortcut");
     check(partial.switcher == switcher::Options{}, "legacy configs inherit switcher defaults");
     auto all = parseConfig("[shortcuts]\n[switcher]\nenabled=false\nscope='all-desktops'\n");
     check(!all.switcher.enabled && all.switcher.scope == switcher::Scope::AllDesktops,
           "switcher file settings");
-    for (auto value : {"switcher=true\n[shortcuts]", "[shortcuts]\n[switcher]\nenabled='yes'",
-                       "[shortcuts]\n[switcher]\nscope='all'", "[shortcuts]\n[switcher]\nscope=1",
-                       "[shortcuts]\n[switcher]\nunknown=true"})
+    for (auto value :
+         {"switcher=true\n[shortcuts]", "[shortcuts]\n[switcher]\nenabled='yes'",
+          "[shortcuts]\n[switcher]\nscope='all'", "[shortcuts]\n[switcher]\nscope=1",
+          "[shortcuts]\n[switcher]\nshortcut=1", "[shortcuts]\n[switcher]\nshortcut=''",
+          "[shortcuts]\n[switcher]\nshortcut='tab'",
+          "[shortcuts]\n[switcher]\nshortcut='option+up'",
+          "[shortcuts]\n[switcher]\nshortcut='option+escape'",
+          "[shortcuts]\n[switcher]\nunknown=true"})
         rejects([&] { parseConfig(value); }, 78, "invalid switcher configuration");
     const auto withSwitcher =
         source + "\n[switcher]\n# Keep switcher note\nenabled=false\nscope='all-desktops'\n";
@@ -111,6 +117,28 @@ void configuration() {
           "settings save preserves switcher comments");
     check(parseConfig(editedConfig(source, values, all.switcher)).switcher == all.switcher,
           "settings save adds switcher table to legacy config");
+    const auto customSource = source + "\n[switcher]\nshortcut='CONTROL+Space' # Keep chord note\n";
+    const auto custom = parseConfig(customSource);
+    check(custom.switcher.shortcut.text() == "ctrl+space", "custom switcher shortcut parsed");
+    check(parseConfig(editedConfig(customSource, values)).switcher == custom.switcher,
+          "desktop-only saves preserve custom switcher shortcut");
+    const auto changed = editedConfig(customSource, values, defaults.switcher);
+    check(parseConfig(changed).switcher == defaults.switcher &&
+              changed.find("Keep chord note") != std::string::npos,
+          "switcher shortcut edits preserve comments");
+    check(parseConfig(editedConfig(source, values, custom.switcher)).switcher == custom.switcher,
+          "settings can add a custom switcher shortcut");
+    for (const auto chord : {"ctrl+left", "ctrl+shift+left"})
+        rejects(
+            [&] {
+                parseConfig(std::string("[shortcuts]\nleft='") + chord +
+                            "'\n[switcher]\nshortcut='ctrl+left'\n");
+            },
+            78, "switcher conflicts with desktop shortcut or reverse chord");
+    check(!parseConfig("[shortcuts]\nleft='ctrl+left'\n[switcher]\nenabled=false\n"
+                       "shortcut='ctrl+left'\n")
+               .switcher.enabled,
+          "disabled switcher does not reserve its shortcut");
     Temporary temporary;
     const auto path = temporary.path + "/config";
     PendingSave first(path, source);

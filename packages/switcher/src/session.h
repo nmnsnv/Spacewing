@@ -1,5 +1,7 @@
 #pragma once
 
+#include "shortcut.h"
+#include <array>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +14,7 @@ enum class Scope { CurrentDesktop, AllDesktops };
 struct Options {
     bool enabled = true;
     Scope scope = Scope::CurrentDesktop;
+    Shortcut shortcut{};
     auto operator<=>(const Options &) const = default;
 };
 struct WindowID {
@@ -28,7 +31,7 @@ struct Candidate {
 // A frozen ordering for one modifier hold. No platform or desktop-manager objects.
 class Session {
 public:
-    void begin(std::vector<Candidate> windows, std::optional<WindowID> focused, bool reverse);
+    void begin(std::vector<Candidate> windows, std::optional<WindowID> focused);
     void step(bool reverse);
     void cancel();
     std::optional<WindowID> commit();
@@ -41,15 +44,12 @@ private:
     size_t selected_ = 0;
 };
 
-enum class Key { Tab, Escape, Other };
 enum class InputType { Down, Up, Modifiers };
 enum class Intent { None, Forward, Backward, Commit, Cancel };
 struct Input {
     InputType type;
     Key key = Key::Other;
-    bool option = false;
-    bool shift = false;
-    bool otherModifier = false;
+    unsigned modifiers = 0;
     bool repeat = false;
 };
 struct Decision {
@@ -60,13 +60,14 @@ struct Decision {
 class Keyboard {
 public:
     Decision handle(Input event, bool blocked);
+    void configure(Shortcut shortcut);
     void cancel() { active_ = false; }
     void reset();
     bool active() const { return active_; }
 
 private:
     bool active_ = false;
-    bool tabDown_ = false;
-    bool escapeDown_ = false;
+    Shortcut shortcut_;
+    std::array<bool, 128> held_{};
 };
 } // namespace spacewing::switcher

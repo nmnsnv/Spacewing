@@ -5,7 +5,8 @@ right = "ctrl+shift+option+right"
 drag_left = "ctrl+shift+cmd+left"
 drag_right = "ctrl+shift+cmd+right"
 
-# Option+Tab switches individual windows. Shift reverses; Escape cancels.
+# The shortcut selects the second window. Up/Down navigate; Escape cancels.
 [switcher]
 enabled = true
+shortcut = "option+tab"
 scope = "current-desktop" # Or "all-desktops".

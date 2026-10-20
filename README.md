@@ -136,6 +136,7 @@ drag_right = "ctrl+shift+cmd+right"
 
 [switcher]
 enabled = true
+shortcut = "option+tab"
 scope = "current-desktop" # Or "all-desktops".
 ~~~
 
@@ -164,21 +165,33 @@ yourself; Spacewing does not rewrite macOS keyboard settings.
 
 ## Window switching
 
-Hold **Option** and press **Tab** to select the next individual window. Keep Option
-held and press Tab again to advance, add **Shift** to reverse, release Option to
-activate, or press **Escape** to cancel. A held Tab does not repeat. The overlay
-shows app icons and window titles without taking keyboard focus. Other typing
+The active window appears first; opening the switcher selects the second window
+(or the only window if there is just one). Hold **Option** and press **Tab** to open
+it. Keep Option held and use **Up/Down** to move the selector, or press Tab again to
+advance and add **Shift** to reverse. Release Option to activate the selection, or
+press **Escape** to close without activating it. Held arrows repeat; a held shortcut
+key does not repeat. The overlay shows app icons and window titles without taking
+keyboard focus. Other typing
 cancels the picker and passes through to the focused app.
 
 The default scope is the currently active native desktop. Change **Window scope**
 in Settings, or set **switcher.scope** to **"all-desktops"** in the config file.
-Set **switcher.enabled = false** to disable the feature. Both settings reload live;
+Set **switcher.enabled = false** to disable the feature. Switcher settings reload live;
 an omitted switcher table uses the defaults above, and invalid edits preserve the
-last valid configuration. The initial keyboard binding is fixed to Option+Tab.
+last valid configuration. Change **Switcher shortcut** in Settings by recording or
+typing a chord, or set **switcher.shortcut**, for example **"ctrl+space"**. Use at
+least one of Control, Shift, Option, or Command with Tab, Space, a letter, digit,
+Left/Right, F1–F12, Return, Delete, or a named punctuation key (for example
+**"option+grave"**). Key names follow physical macOS key positions. Up, Down, and
+Escape are reserved for navigation and closing. Release any required modifier to
+activate the selection. Extra Shift reverses cycling unless it is part of the
+configured chord. The shortcut and its reverse chord cannot duplicate an enabled
+desktop shortcut. Omitted shortcut settings default to Option+Tab.
 
 This first version lists standard Accessibility windows and dialogs, excluding
 minimized windows, desktop elements, and Spacewing's own overlay. It starts from
-WindowServer front-to-back order and freezes that order while Option is held;
+WindowServer front-to-back order, moves the active window to the front while keeping
+the other windows in order, and freezes that list while the shortcut modifiers are held;
 it does not yet maintain a persistent most-recently-used history or show previews.
 Titles come from Accessibility; no screen images are captured. Unsupported or
 unresponsive applications are skipped; discovery stops querying apps after a
@@ -265,6 +278,8 @@ ctest --test-dir build-switcher --output-on-failure
 ./build-switcher/spacewing-switcher
 # Optional independent-host scope:
 ./build-switcher/spacewing-switcher --all-desktops
+# Choose another shortcut in the standalone host.
+./build-switcher/spacewing-switcher --shortcut ctrl+space
 ~~~
 
 The standalone workspace build produces its libraries and tests. The minimal
@@ -345,9 +360,10 @@ ctest --test-dir build --output-on-failure
 Tests exercise command parsing, TOML validation and comment retention, atomic saves,
 symlinks, hotkey rollback and held keys, gesture golden bytes, display selection,
 unavailable Accessibility focus, move/follow/focus failures, and the bounded action
-queue. Switcher tests cover individual-window cycling, wrapping, reverse selection,
-commit/cancel, held keys, modifier release order, and host blocking. Configuration
-tests cover switcher defaults, scope validation, and settings/comment retention.
+queue. Switcher tests cover active-window-first ordering, second-item selection,
+cycling, wrapping, arrow navigation, configurable shortcuts, commit/cancel, held keys,
+modifier release order, and host blocking. Configuration tests cover switcher defaults,
+scope and shortcut validation, chord conflicts, and settings/comment retention.
 The IPC integration test uses temporary local sockets. Tests never post gestures
 or move windows.
 
@@ -373,10 +389,12 @@ The following checks cover live behavior beyond the automated suite:
    pointer's display after a fresh launch. Carrying an unidentified window should
    report an error without moving anything.
 
-9. Open two windows of one app and another app. Check Option+Tab, repeated Tab,
+9. Open two windows of one app and another app. Confirm the active window is first
+   and opening selects the second item. Check Up/Down, held arrows, repeated Tab,
    Shift+Tab, Option release before Tab release, and Escape without focus changing.
    Check quick taps while discovery is pending and close the selected window before
-   releasing Option.
+   releasing Option. Change the switcher shortcut in Settings and in the config;
+   confirm navigation, modifier release, and Escape work with the new chord.
 10. Test both scopes with multiple desktops, fullscreen apps, and separate displays.
     Change scope and enabled state through both Settings and the file, including
     while the picker is open. Record a desktop shortcut while Option+Tab is held.

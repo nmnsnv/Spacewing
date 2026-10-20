@@ -218,21 +218,31 @@ Reply Runtime::settingsRequest(const std::vector<std::string> &args) {
         reply.values.push_back(config.switcher.scope == switcher::Scope::AllDesktops
                                    ? "all-desktops"
                                    : "current-desktop");
+        reply.values.push_back(config.switcher.shortcut.text());
         reply.error.clear(); // Displayable status, not a transport failure.
         return reply;
     }
-    if (args[0] == "__settings-save" && (args.size() == 6 || args.size() == 8)) {
+    if (args[0] == "__settings-save" &&
+        (args.size() == 6 || args.size() == 8 || args.size() == 9)) {
         if (readFile(path_) != args[1])
             throw Error("Config changed outside Settings. Reload before saving.", 78);
         std::array<std::string, 4> chords{args[2], args[3], args[4], args[5]};
         std::optional<switcher::Options> options;
-        if (args.size() == 8) {
+        if (args.size() >= 8) {
             if ((args[6] != "true" && args[6] != "false") ||
                 (args[7] != "current-desktop" && args[7] != "all-desktops"))
                 throw Error("Invalid window switcher settings", 78);
-            options = switcher::Options{args[6] == "true", args[7] == "all-desktops"
-                                                               ? switcher::Scope::AllDesktops
-                                                               : switcher::Scope::CurrentDesktop};
+            options = parseConfig(args[1]).switcher;
+            options->enabled = args[6] == "true";
+            options->scope = args[7] == "all-desktops" ? switcher::Scope::AllDesktops
+                                                       : switcher::Scope::CurrentDesktop;
+            if (args.size() == 9) {
+                try {
+                    options->shortcut = switcher::parseShortcut(args[8]);
+                } catch (const std::invalid_argument &e) {
+                    throw Error(e.what(), 78);
+                }
+            }
         }
         auto text = editedConfig(args[1], chords, options);
         auto config = parseConfig(text);

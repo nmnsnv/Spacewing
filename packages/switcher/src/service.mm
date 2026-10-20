@@ -263,7 +263,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                                mask, &event, this);
         if (!tap)
             throw std::runtime_error(
-                "Cannot install Option+Tab keyboard handler; check Accessibility access.");
+                "Cannot install window switcher keyboard handler; check Accessibility access.");
         source = CFMachPortCreateRunLoopSource(nullptr, tap, 0);
         if (!source) {
             stop();
@@ -313,12 +313,11 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         Input input{type == kCGEventKeyDown ? InputType::Down
                     : type == kCGEventKeyUp ? InputType::Up
                                             : InputType::Modifiers,
-                    code == 48   ? Key::Tab
-                    : code == 53 ? Key::Escape
-                                 : Key::Other,
-                    (flags & kCGEventFlagMaskAlternate) != 0,
-                    (flags & kCGEventFlagMaskShift) != 0,
-                    (flags & (kCGEventFlagMaskControl | kCGEventFlagMaskCommand)) != 0,
+                    static_cast<Key>(code),
+                    ((flags & kCGEventFlagMaskAlternate) ? Option : 0u) |
+                        ((flags & kCGEventFlagMaskShift) ? Shift : 0u) |
+                        ((flags & kCGEventFlagMaskControl) ? Control : 0u) |
+                        ((flags & kCGEventFlagMaskCommand) ? CommandKey : 0u),
                     CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0};
         try {
             const auto decision = self.keyboard.handle(input, self.activating || self.finishing ||
@@ -395,8 +394,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                     }
                     auto intents = std::move(self->pending);
                     self->pending.clear();
-                    self->session.begin(result.windows, result.focused,
-                                        intents.front() == Intent::Backward);
+                    self->session.begin(result.windows, result.focused);
                     if (!self->session.active()) {
                         self->cancel();
                         return;
@@ -538,6 +536,8 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
 Service::Service(Host host) : impl_(std::make_shared<Impl>(std::move(host))) {}
 Service::~Service() { impl_->stop(); }
 void Service::configure(Options options) {
+    if (parseShortcut(options.shortcut.text()) != options.shortcut)
+        throw std::invalid_argument("Invalid window switcher shortcut");
     if (options == impl_->options && (!options.enabled || impl_->tap))
         return;
     if (options.enabled)
@@ -545,6 +545,7 @@ void Service::configure(Options options) {
     else
         impl_->stop();
     impl_->cancel();
+    impl_->keyboard.configure(options.shortcut);
     impl_->options = options;
 }
 void Service::cancel() { impl_->cancel(); }

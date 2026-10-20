@@ -1,5 +1,6 @@
 #include "application.h"
 #include "ipc/socket.h"
+#include "shortcut.h"
 #include "shortcuts.h"
 #import <AppKit/AppKit.h>
 #include <thread>
@@ -108,19 +109,29 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
         clear.tag = i;
         [view addSubview:clear];
     }
-    fields_ = fields;
-    recordButtons_ = records;
-    switcherEnabled_ = [NSButton checkboxWithTitle:@"Enable Option+Tab window switcher"
-                                            target:nil
-                                            action:nil];
+    switcherEnabled_ = [NSButton checkboxWithTitle:@"Enable window switcher" target:nil action:nil];
     switcherEnabled_.frame = NSMakeRect(24, 235, 430, 26);
     [view addSubview:switcherEnabled_];
-    [view addSubview:label(@"Window scope", NSMakeRect(24, 199, 155, 24))];
-    switcherScope_ = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(184, 196, 310, 28)
+    [view addSubview:label(@"Switcher shortcut", NSMakeRect(24, 199, 155, 24))];
+    auto switcherField = [[NSTextField alloc] initWithFrame:NSMakeRect(184, 196, 310, 28)];
+    switcherField.placeholderString = @"option+tab";
+    [fields addObject:switcherField];
+    [view addSubview:switcherField];
+    auto switcherRecord = button(@"Record", NSMakeRect(504, 194, 88, 32), self, @selector(record:));
+    switcherRecord.tag = 4;
+    [records addObject:switcherRecord];
+    [view addSubview:switcherRecord];
+    auto switcherReset = button(@"Reset", NSMakeRect(598, 194, 76, 32), self, @selector(clear:));
+    switcherReset.tag = 4;
+    [view addSubview:switcherReset];
+    fields_ = fields;
+    recordButtons_ = records;
+    [view addSubview:label(@"Window scope", NSMakeRect(24, 157, 155, 24))];
+    switcherScope_ = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(184, 154, 310, 28)
                                                 pullsDown:NO];
     [switcherScope_ addItemsWithTitles:@[ @"Current desktop", @"All desktops" ]];
     [view addSubview:switcherScope_];
-    message_ = label(@"Loading…", NSMakeRect(24, 94, 650, 72));
+    message_ = label(@"Loading…", NSMakeRect(24, 94, 650, 48));
     message_.textColor = NSColor.secondaryLabelColor;
     [view addSubview:message_];
     path_ = label(@"", NSMakeRect(24, 64, 650, 24));
@@ -162,7 +173,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     [self endRecording];
     save_.enabled = NO;
     exchange({"__settings-read"}, [self](Reply reply) {
-        if (reply.code || reply.values.size() != 10) {
+        if (reply.code || reply.values.size() != 11) {
             message_.stringValue =
                 ns(reply.error.empty() ? "Cannot read resident settings." : reply.error);
             return;
@@ -180,6 +191,8 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
             fields_[i].enabled = editable_;
             recordButtons_[i].enabled = editable_;
         }
+        fields_[4].stringValue = ns(reply.values[10]);
+        fields_[4].enabled = recordButtons_[4].enabled = editable_;
         switcherEnabled_.state =
             reply.values[8] == "true" ? NSControlStateValueOn : NSControlStateValueOff;
         [switcherScope_ selectItemAtIndex:reply.values[9] == "all-desktops" ? 1 : 0];
@@ -192,10 +205,11 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
         return;
     [self endRecording];
     std::vector<std::string> args{"__settings-save", original_};
-    for (NSTextField *field in fields_)
-        args.emplace_back(field.stringValue.UTF8String);
+    for (NSUInteger i = 0; i < 4; ++i)
+        args.emplace_back(fields_[i].stringValue.UTF8String);
     args.emplace_back(switcherEnabled_.state == NSControlStateValueOn ? "true" : "false");
     args.emplace_back(switcherScope_.indexOfSelectedItem == 1 ? "all-desktops" : "current-desktop");
+    args.emplace_back(fields_[4].stringValue.UTF8String);
     save_.enabled = NO;
     exchange(std::move(args), [self](Reply reply) {
         save_.enabled = editable_;
@@ -227,8 +241,11 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
             return;
         }
         token_ = reply.values[0];
-        message_.stringValue =
-            @"Press Control / Shift / Option / Command with ← or →. Escape cancels.";
+        message_.stringValue = recordingRow_ == 4
+                                   ? @"Press a modifier with Tab, Space, a letter, or another key. "
+                                      "Escape cancels."
+                                   : @"Press Control / Shift / Option / Command with ← or →. "
+                                      "Escape cancels.";
         [window_ makeFirstResponder:window_];
         timer_ = [NSTimer scheduledTimerWithTimeInterval:0.1
                                                  repeats:YES
@@ -265,6 +282,25 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     }
     if (token_.empty())
         return YES;
+    if (recordingRow_ == 4) {
+        unsigned modifiers = 0;
+        if (event.modifierFlags & NSEventModifierFlagControl)
+            modifiers |= switcher::Control;
+        if (event.modifierFlags & NSEventModifierFlagShift)
+            modifiers |= switcher::Shift;
+        if (event.modifierFlags & NSEventModifierFlagOption)
+            modifiers |= switcher::Option;
+        if (event.modifierFlags & NSEventModifierFlagCommand)
+            modifiers |= switcher::CommandKey;
+        const auto chord = switcher::Shortcut{modifiers, static_cast<switcher::Key>(event.keyCode)};
+        try {
+            [self acceptChord:ns(switcher::parseShortcut(chord.text()).text())];
+        } catch (const std::invalid_argument &) {
+            message_.stringValue = @"Hold a modifier with a supported key. Up/Down navigate the "
+                                    "picker; Escape cancels.";
+        }
+        return YES;
+    }
     if (event.keyCode != 123 && event.keyCode != 124)
         return YES;
     Shortcut shortcut;
@@ -305,7 +341,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     if (!editable_)
         return;
     [self endRecording];
-    fields_[sender.tag].stringValue = @"";
+    fields_[sender.tag].stringValue = sender.tag == 4 ? @"option+tab" : @"";
 }
 - (void)openConfig:(id)sender {
     if (!configPath_.empty())

@@ -34,6 +34,7 @@ std::string defaultConfig() {
            "drag_right = \"ctrl+shift+cmd+right\"\n"
            "\n[switcher]\n"
            "enabled = true\n"
+           "shortcut = \"option+tab\"\n"
            "scope = \"current-desktop\"\n";
 }
 
@@ -61,6 +62,14 @@ Config parseConfig(const std::string &text) {
                 if (!value.is_boolean())
                     throw Error("switcher.enabled must be a boolean", 78);
                 config.switcher.enabled = value.as_boolean();
+            } else if (key == "shortcut") {
+                if (!value.is_string())
+                    throw Error("switcher.shortcut must be a string", 78);
+                try {
+                    config.switcher.shortcut = switcher::parseShortcut(value.as_string());
+                } catch (const std::invalid_argument &e) {
+                    throw Error(e.what(), 78);
+                }
             } else if (key == "scope") {
                 if (!value.is_string() ||
                     (value.as_string() != "current-desktop" && value.as_string() != "all-desktops"))
@@ -81,6 +90,15 @@ Config parseConfig(const std::string &text) {
         config.shortcuts[i] = parseShortcut(it->second.as_string());
         if (config.shortcuts[i].enabled() && !used.insert(config.shortcuts[i]).second)
             throw Error("Duplicate shortcut: " + config.shortcuts[i].text(), 78);
+        const auto &shortcut = config.shortcuts[i];
+        if (config.switcher.enabled && shortcut.enabled() &&
+            shortcut.key == static_cast<unsigned>(config.switcher.shortcut.key) &&
+            (shortcut.modifiers & ~unsigned(Shift)) ==
+                (config.switcher.shortcut.modifiers & ~unsigned(Shift)) &&
+            (shortcut.modifiers & config.switcher.shortcut.modifiers) ==
+                config.switcher.shortcut.modifiers)
+            throw Error(
+                "Window switcher shortcut conflicts with desktop shortcut: " + shortcut.text(), 78);
     }
     return config;
 }
@@ -111,6 +129,11 @@ std::string editedConfig(const std::string &original, const std::array<std::stri
             settings.at("scope").as_string() = scope;
         else
             settings["scope"] = scope;
+        const auto shortcut = switcher->shortcut.text();
+        if (settings.contains("shortcut"))
+            settings.at("shortcut").as_string() = shortcut;
+        else
+            settings["shortcut"] = shortcut;
     }
     auto result = toml::format(root);
     parseConfig(result);
