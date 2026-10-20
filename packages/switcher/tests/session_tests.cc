@@ -1,4 +1,5 @@
 #include "session.h"
+#include "switching.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -225,6 +226,125 @@ void shortcuts() {
     check(result.consume && result.intent == Intent::Forward,
           "Shift in the configured chord is not interpreted as reverse");
 }
+void quickTap(Controller &controller) {
+    controller.accept(Intent::Forward);
+    controller.accept(Intent::Commit);
+}
+void rapidSwitching() {
+    Controller controller;
+    quickTap(controller);
+    // More complete gestures can arrive before the first catalog is ready.
+    for (int i = 0; i < 1000; ++i)
+        quickTap(controller);
+    check(controller.phase() == Phase::Discovering, "rapid taps wait for first discovery");
+    controller.discovered(windows, a);
+    check(controller.focused() == a, "activation request alone leaves the observed focus intact");
+    check(controller.target() == b && controller.phase() == Phase::Activating,
+          "first quick tap activates the second window");
+    check(!controller.activated(c) && controller.target() == b,
+          "focus on a third window cannot complete the requested switch");
+    check(!controller.activated(a), "another window in the same app cannot confirm activation");
+    check(controller.focused() == a, "wrong focus acknowledgment cannot change recorded focus");
+    check(!controller.activated(WindowID{20, b.number}),
+          "matching a window number in the wrong app cannot complete activation");
+    for (int i = 0; i <= 1000; ++i) {
+        const auto expected = i % 2 == 0 ? b : a;
+        check(controller.target() == expected, "rapid gestures alternate the same two windows");
+        check(controller.activated(expected), "exact focus confirms each switch");
+        check(controller.focused() == expected,
+              "confirmed focus is retained for delayed app notifications");
+        if (i == 1000)
+            break;
+        check(controller.phase() == Phase::Activating,
+              "queued gesture advances only after focus confirmation without another catalog");
+        check(controller.session().windows().empty(), "queued release commits the next picker");
+    }
+    check(controller.phase() == Phase::Idle && !controller.target(),
+          "all queued gestures finish exactly once");
+    quickTap(controller);
+    controller.discovered({windows[1], windows[2], windows[0]}, b);
+    check(controller.target() == a, "a later tap still returns to the previous window");
+    quickTap(controller); // Also queue a gesture during native activation.
+    check(controller.activated(a) && controller.phase() == Phase::Activating,
+          "gestures arriving during activation are retained");
+    check(controller.target() == b, "queued gesture uses confirmed focus instead of stale focus");
+    controller.activated(b);
+    auto current = b;
+    for (int i = 0; i < 1000; ++i) {
+        quickTap(controller);
+        check(controller.phase() == Phase::Discovering, "a later gesture refreshes the catalog");
+        // Simulate a third window coming ahead of the previous one on every refresh.
+        controller.discovered({windows[2], windows[1], windows[0]}, current);
+        const auto expected = current == a ? b : a;
+        check(controller.target() == expected, "fresh reordered snapshots retain the same pair");
+        check(controller.activated(expected), "refreshed switch confirms exact focus");
+        current = expected;
+    }
+}
+void historyAndCancellation() {
+    Controller controller;
+    quickTap(controller);
+    controller.discovered(windows, a);
+    controller.activated(b);
+    controller.accept(Intent::Forward);
+    controller.discovered({windows[1], windows[2], windows[0]}, b);
+    check(controller.session().windows()[0].id == b && controller.session().windows()[1].id == a,
+          "picker displays active window first and previous window second");
+    controller.accept(Intent::Forward);
+    check(controller.session().selected() == 2,
+          "holding the modifier and pressing Tab can still reach a third window");
+    controller.accept(Intent::Cancel);
+    check(controller.phase() == Phase::Idle, "Escape closes picker without altering history");
+    quickTap(controller);
+    controller.discovered({windows[1], windows[2], windows[0]}, b);
+    check(controller.target() == a, "browsing and cancelling does not promote a third window");
+    quickTap(controller);
+    controller.cancel(); // Native failure or host cancellation while work is queued.
+    check(!controller.activated(a) && controller.phase() == Phase::Idle,
+          "cancelled activation and queued gestures cannot update history");
+    quickTap(controller);
+    controller.discovered({windows[1], windows[2], windows[0]}, b);
+    check(controller.target() == a, "failed activation retains previous confirmed history");
+    controller.cancel();
+    quickTap(controller);
+    controller.discovered({windows[1], windows[2]}, b);
+    check(controller.target() == c, "closed or out-of-scope previous window is skipped");
+    controller.activated(c);
+    quickTap(controller);
+    controller.discovered(windows, a); // An externally focused window was observed at opening.
+    check(controller.target() == c, "externally focused window becomes first in history");
+    controller.cancel();
+    controller.accept(Intent::Backward);
+    controller.discovered(windows, c);
+    check(controller.session().selected() == 1 && controller.session().windows()[1].id == a,
+          "opening with reverse shortcut still selects the previous window in row two");
+    controller.accept(Intent::Backward);
+    check(controller.session().selected() == 0, "reverse navigation reaches the active window");
+    controller.cancel();
+    quickTap(controller);
+    controller.discovered({}, std::nullopt);
+    check(controller.phase() == Phase::Idle && !controller.target(),
+          "empty discovery clears pending gestures without activation");
+    controller.accept(Intent::Forward);
+    controller.accept(Intent::Cancel);
+    controller.discovered(windows, a);
+    check(controller.phase() == Phase::Idle, "cancelled discovery does not reopen a picker");
+    quickTap(controller);
+    controller.discovered({windows[0], windows[2], windows[1]}, a);
+    check(controller.activated(c), "switch can confirm a window in another app");
+    controller.accept(Intent::Forward); // A queued gesture whose modifier remains held.
+    controller.discovered({windows[2], windows[1], windows[0]}, c);
+    check(controller.session().windows()[1].id == a,
+          "cross-app activation retains the previous window ahead of another app window");
+    controller.accept(Intent::Commit);
+    controller.accept(Intent::Forward);
+    check(controller.activated(a) && controller.phase() == Phase::Picking &&
+              controller.session().windows()[1].id == c,
+          "a gesture held during activation opens its picker after confirmation");
+    controller.accept(Intent::Backward);
+    controller.accept(Intent::Commit);
+    check(controller.target() == a, "queued picker navigation can select the active window");
+}
 } // namespace
 int main() {
     try {
@@ -232,6 +352,8 @@ int main() {
         keyboard();
         arrows();
         shortcuts();
+        rapidSwitching();
+        historyAndCancellation();
         std::cout << checks << " switcher checks passed\n";
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';

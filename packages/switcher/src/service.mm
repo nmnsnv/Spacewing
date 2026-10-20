@@ -1,6 +1,7 @@
 #include "service.h"
 #include "cf_ref.h"
 #include "macos.h"
+#include "switching.h"
 #import <AppKit/AppKit.h>
 #include <ApplicationServices/ApplicationServices.h>
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 
@@ -163,7 +165,7 @@ Catalog catalog(Scope scope, int frontmost, const std::atomic_bool &cancelled) {
             result.windows.push_back(std::move(it->second));
     return result;
 }
-void raiseWindow(WindowID target, Scope scope, const std::atomic_bool &cancelled) {
+bool activateWindow(WindowID target, Scope scope, const std::atomic_bool &cancelled) {
     if (!trusted())
         throw std::runtime_error("Accessibility access was revoked");
     if (scope == Scope::CurrentDesktop && !belongsTo(target.number, currentDesktop()))
@@ -183,13 +185,51 @@ void raiseWindow(WindowID target, Scope scope, const std::atomic_bool &cancelled
             auto minimized = attribute(element, kAXMinimizedAttribute);
             if (minimized && CFEqual(minimized.get(), kCFBooleanTrue))
                 throw std::runtime_error("The selected window was minimized");
+            const auto focus = [&] {
+                auto main = AXUIElementSetAttributeValue(element, kAXMainAttribute, kCFBooleanTrue);
+                if (main != kAXErrorSuccess && main != kAXErrorAttributeUnsupported)
+                    throw std::runtime_error("Cannot set the selected window's main state");
+                // Some apps expose these as read-only. Raising plus exact focus
+                // verification remains required even when either write is unsupported.
+                AXUIElementSetAttributeValue(app.get(), kAXFocusedWindowAttribute, element);
+                AXUIElementSetAttributeValue(element, kAXFocusedAttribute, kCFBooleanTrue);
+                if (AXUIElementPerformAction(element, kAXRaiseAction) != kAXErrorSuccess)
+                    throw std::runtime_error("Cannot raise the selected window");
+            };
             if (cancelled)
-                return;
-            auto main = AXUIElementSetAttributeValue(element, kAXMainAttribute, kCFBooleanTrue);
-            if ((main != kAXErrorSuccess && main != kAXErrorAttributeUnsupported) ||
-                AXUIElementPerformAction(element, kAXRaiseAction) != kAXErrorSuccess)
-                throw std::runtime_error("Cannot focus the selected window");
-            return;
+                return false;
+            focus();
+            if (cancelled)
+                return false;
+            if (frontmostPID() != target.pid && !activatePID(target.pid))
+                throw std::runtime_error("Cannot activate the selected application");
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            bool raisedAfterActivation = false;
+            unsigned matches = 0;
+            while (!cancelled && std::chrono::steady_clock::now() < deadline) {
+                if (frontmostPID() == target.pid) {
+                    if (!raisedAfterActivation) {
+                        // App activation can restore a different key window. Apply
+                        // the exact selection again after the app is frontmost.
+                        focus();
+                        raisedAfterActivation = true;
+                    }
+                    if (cancelled)
+                        return false;
+                    if (focusedWindow(target.pid) == target && frontmostPID() == target.pid)
+                        ++matches;
+                    else
+                        matches = 0;
+                    if (matches == 2)
+                        return true;
+                } else {
+                    matches = 0;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (cancelled)
+                return false;
+            throw std::runtime_error("Cannot confirm focus on the selected window");
         }
     }
     throw std::runtime_error("The selected window has closed or is no longer accessible");
@@ -200,7 +240,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
     explicit Impl(Host callbacks) : host(std::move(callbacks)) {}
     Host host;
     Options options{false, Scope::CurrentDesktop};
-    Session session;
+    Controller controller;
     Keyboard keyboard;
     CFMachPortRef tap = nullptr;
     CFRunLoopSourceRef source = nullptr;
@@ -208,7 +248,6 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         dispatch_queue_create("dev.spacewing.switcher", DISPATCH_QUEUE_SERIAL);
     NSPanel *panel = nil;
     NSMutableArray *observers = [NSMutableArray new];
-    std::vector<Intent> pending;
     uint64_t generation = 0;
     bool loading = false;
     bool activating = false;
@@ -226,8 +265,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         *workCancelled = true;
         finishing = false;
         loading = false;
-        pending.clear();
-        session.cancel();
+        controller.cancel();
         keyboard.cancel(); // Keep swallowed key-downs paired with their key-ups.
         [panel orderOut:nil];
     }
@@ -277,14 +315,32 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                  NSWorkspaceActiveSpaceDidChangeNotification,
                  NSWorkspaceDidActivateApplicationNotification
              ]) {
-            [observers addObject:[center addObserverForName:name
-                                                     object:nil
-                                                      queue:NSOperationQueue.mainQueue
-                                                 usingBlock:^(NSNotification *) {
-                                                   if (auto self = weak.lock();
-                                                       self && !self->activating)
-                                                       self->cancel();
-                                                 }]];
+            [observers
+                addObject:
+                    [center addObserverForName:name
+                                        object:nil
+                                         queue:NSOperationQueue.mainQueue
+                                    usingBlock:^(NSNotification *note) {
+                                      auto self = weak.lock();
+                                      if (!self)
+                                          return;
+                                      if ([note.name
+                                              isEqualToString:
+                                                  NSWorkspaceDidActivateApplicationNotification]) {
+                                          NSRunningApplication *app =
+                                              note.userInfo[NSWorkspaceApplicationKey];
+                                          const auto pid = app.processIdentifier;
+                                          if (pid != frontmostPID())
+                                              return;
+                                          // App activation can be notified after
+                                          // its exact window was already confirmed.
+                                          const auto focused = self->controller.focused();
+                                          if (focused && focused->pid == pid)
+                                              return;
+                                      }
+                                      if (!self->activating)
+                                          self->cancel();
+                                    }]];
         }
         for (NSNotificationName name in
              @[ NSWorkspaceWillSleepNotification, NSWorkspaceSessionDidResignActiveNotification ]) {
@@ -320,8 +376,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                         ((flags & kCGEventFlagMaskCommand) ? CommandKey : 0u),
                     CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0};
         try {
-            const auto decision = self.keyboard.handle(input, self.activating || self.finishing ||
-                                                                  self.host.unavailable());
+            const auto decision = self.keyboard.handle(input, self.host.unavailable());
             if (decision.intent == Intent::Commit)
                 self.finishing = true;
             if (decision.intent != Intent::None) {
@@ -344,79 +399,81 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                 cancel();
                 return;
             }
-            if (loading) {
-                pending.push_back(intent);
-                return;
-            }
-            if (intent == Intent::Commit) {
-                commit();
-                return;
-            }
-            if (session.active()) {
-                session.step(intent == Intent::Backward);
-                show();
-                return;
-            }
-            if (activating)
-                return;
-            host.began();
-            loading = true;
-            workCancelled = std::make_shared<std::atomic_bool>(false);
-            const auto cancelled = workCancelled;
-            pending = {intent};
-            auto weak = weak_from_this();
-            const auto token = generation;
-            const auto scope = options.scope;
-            const int frontmost = frontmostPID();
-            dispatch_async(worker, ^{
-              @autoreleasepool {
-                  Catalog result;
-                  std::string error;
-                  try {
-                      if (!*cancelled)
-                          result = catalog(scope, frontmost, *cancelled);
-                  } catch (const std::exception &e) {
-                      error = e.what();
-                  }
-                  dispatch_async(dispatch_get_main_queue(), ^{
-                    auto self = weak.lock();
-                    if (!self || token != self->generation)
-                        return;
-                    self->loading = false;
-                    if (!error.empty()) {
-                        self->cancel();
-                        self->report(error);
-                        return;
-                    }
-                    if (self->host.unavailable()) {
-                        self->cancel();
-                        return;
-                    }
-                    auto intents = std::move(self->pending);
-                    self->pending.clear();
-                    self->session.begin(result.windows, result.focused);
-                    if (!self->session.active()) {
-                        self->cancel();
-                        return;
-                    }
-                    for (size_t i = 1; i < intents.size(); ++i) {
-                        if (intents[i] == Intent::Commit) {
-                            self->commit();
-                            return;
-                        }
-                        self->session.step(intents[i] == Intent::Backward);
-                    }
-                    self->show();
-                  });
-              }
-            });
+            controller.accept(intent);
+            pump();
         } catch (const std::exception &e) {
             cancel();
             report(e.what());
         }
     }
+    void pump() {
+        try {
+            if (activating || loading)
+                return;
+            if (host.unavailable()) {
+                cancel();
+                return;
+            }
+            if (controller.phase() == Phase::Picking) {
+                show();
+                return;
+            }
+            if (controller.phase() == Phase::Activating) {
+                commit();
+                return;
+            }
+            if (controller.phase() == Phase::Discovering) {
+                discover();
+                return;
+            }
+            finishing = false;
+            [panel orderOut:nil];
+        } catch (const std::exception &e) {
+            cancel();
+            report(e.what());
+        }
+    }
+    void discover() {
+        host.began();
+        loading = true;
+        workCancelled = std::make_shared<std::atomic_bool>(false);
+        const auto cancelled = workCancelled;
+        auto weak = weak_from_this();
+        const auto token = generation;
+        const auto scope = options.scope;
+        const int frontmost = frontmostPID();
+        dispatch_async(worker, ^{
+          @autoreleasepool {
+              Catalog result;
+              std::string error;
+              try {
+                  if (!*cancelled)
+                      result = catalog(scope, frontmost, *cancelled);
+              } catch (const std::exception &e) {
+                  error = e.what();
+              }
+              dispatch_async(dispatch_get_main_queue(), ^{
+                auto self = weak.lock();
+                if (!self || token != self->generation)
+                    return;
+                self->loading = false;
+                if (!error.empty()) {
+                    self->cancel();
+                    self->report(error);
+                    return;
+                }
+                if (self->host.unavailable()) {
+                    self->cancel();
+                    return;
+                }
+                self->controller.discovered(std::move(result.windows), result.focused);
+                self->pump();
+              });
+          }
+        });
+    }
     void commit() {
-        const auto target = session.commit();
+        const auto target = controller.target();
         [panel orderOut:nil];
         if (!target) {
             finishing = false;
@@ -430,9 +487,10 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         dispatch_async(worker, ^{
           @autoreleasepool {
               std::string error;
+              bool confirmed = false;
               try {
                   if (!*cancelled)
-                      raiseWindow(*target, scope, *cancelled);
+                      confirmed = activateWindow(*target, scope, *cancelled);
               } catch (const std::exception &e) {
                   error = e.what();
               }
@@ -442,14 +500,16 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                     return;
                 self->activating = false;
                 self->finishing = false;
-                if (token != self->generation)
+                if (token != self->generation) {
+                    self->pump();
                     return;
-                if (error.empty()) {
-                    if (!activatePID(target->pid))
-                        self->report("Cannot activate the selected application");
-                    else
-                        self->report("");
+                }
+                if (confirmed && error.empty()) {
+                    self->controller.activated(*target);
+                    self->report("");
+                    self->pump();
                 } else {
+                    self->cancel();
                     self->report(error);
                 }
               });
@@ -457,6 +517,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         });
     }
     void show() {
+        const auto &session = controller.session();
         if (!session.active())
             return;
         if (!panel) {
@@ -551,7 +612,7 @@ void Service::configure(Options options) {
 void Service::cancel() { impl_->cancel(); }
 bool Service::activating() const { return impl_->activating; }
 bool Service::busy() const {
-    return impl_->loading || impl_->session.active() || impl_->keyboard.active() ||
+    return impl_->loading || impl_->controller.phase() != Phase::Idle || impl_->keyboard.active() ||
            impl_->finishing || impl_->activating;
 }
 bool Service::running() const { return impl_->tap && CGEventTapIsEnabled(impl_->tap); }

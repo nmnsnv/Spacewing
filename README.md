@@ -125,21 +125,33 @@ sandbox, which currently exposes no valid signing identities.
 
 ## CI and releases
 
-[GitHub Actions](.github/workflows/ci.yml) builds and tests pull requests, pushes to
-**main**, and tags beginning with **v**. You can also run it manually from the Actions tab.
+[CI](.github/workflows/ci.yml) builds and tests pull requests and pushes to
+**main**. You can also run it manually from the Actions tab.
 It builds a Release app for Apple Silicon and Intel on macOS 15, runs the combined
 test suite, and separately builds and tests the workspace and switcher packages.
 Successful runs provide a **Spacewing-macOS-universal** artifact for 14 days. Download
 and extract the artifact, then extract the app ZIP inside it.
 
-Pushing a version tag such as **v0.1.0** also creates a draft GitHub Release with the
-tested app and generated release notes. Review it in GitHub Releases and publish
-when ready. Re-running a tag workflow updates an existing draft's ZIP; published
-release assets are never replaced by the workflow.
+To release the app, open **Actions → Release → Run workflow**, select the branch
+or tag to release, and run it. The separate [Release](.github/workflows/release.yml)
+workflow runs the same build and tests as CI, then creates a draft GitHub Release
+with the tested app and generated release notes. It derives the tag from the app
+version (for example, **v0.1.0**) and automatically creates that Git tag at the exact
+tested commit before creating the draft, so you do not need to push a tag first.
+The Release action appears after its workflow is pushed to the repository's
+default branch.
 
-Before tagging a new version, update **CMakeLists.txt**, **src/main.cc**,
-**resources/Info.plist.in**, and **resources/SettingsInfo.plist** together. The tag
-must match the app, helper, and CLI version exactly. After committing and pushing:
+Review the draft in GitHub Releases and publish when ready. Re-running Release
+updates an existing draft's ZIP; published release assets are never replaced.
+An existing tag must point to the tested commit; use a new app version or select
+that tag when running the workflow.
+
+Before releasing a new version, update **CMakeLists.txt**, **src/main.cc**,
+**resources/Info.plist.in**, and **resources/SettingsInfo.plist** together, then
+commit and push. CMake, app, helper, and CLI versions must match exactly.
+
+Pushing a version tag also starts the Release workflow automatically. If you
+prefer this path, the tag must match the app version:
 
 ~~~sh
 git tag -a v0.1.0 -m "Spacewing v0.1.0"
@@ -194,14 +206,14 @@ yourself; Spacewing does not rewrite macOS keyboard settings.
 
 ## Window switching
 
-The active window appears first; opening the switcher selects the second window
-(or the only window if there is just one). Hold **Option** and press **Tab** to open
+The active window appears first, followed by the previously focused window when
+it is eligible. Opening the switcher selects the second window (or the only window
+if there is just one). Hold **Option** and press **Tab** to open
 it. Keep Option held and use **Up/Down** to move the selector, or press Tab again to
 advance and add **Shift** to reverse. Release Option to activate the selection, or
 press **Escape** to close without activating it. Held arrows repeat; a held shortcut
 key does not repeat. The overlay shows app icons and window titles without taking
-keyboard focus. Other typing
-cancels the picker and passes through to the focused app.
+keyboard focus. Other typing cancels the picker and passes through to the focused app.
 
 The default scope is the currently active native desktop. Change **Window scope**
 in Settings, or set **switcher.scope** to **"all-desktops"** in the config file.
@@ -219,9 +231,12 @@ desktop shortcut. Omitted shortcut settings default to Option+Tab.
 
 This first version lists standard Accessibility windows and dialogs, excluding
 minimized windows, desktop elements, and Spacewing's own overlay. It starts from
-WindowServer front-to-back order, moves the active window to the front while keeping
-the other windows in order, and freezes that list while the shortcut modifiers are held;
-it does not yet maintain a persistent most-recently-used history or show previews.
+WindowServer front-to-back order for windows it has not seen focused. It remembers
+windows focused when the picker opens and exact windows successfully activated by
+the switcher, ordering those by most recent use. This history lasts until the host
+exits. The list stays frozen while the shortcut modifiers are held. Separate quick
+shortcut presses alternate between the same two eligible windows even if macOS
+raises other windows in the meantime. Window previews are not supported.
 Titles come from Accessibility; no screen images are captured. Unsupported or
 unresponsive applications are skipped; discovery stops querying apps after a
 two-second budget and uses the candidates found so far. A selected window that closes or leaves
@@ -230,8 +245,12 @@ different window. In all-desktops mode, activation relies on macOS to follow the
 selected window; it does not move the window between desktops.
 
 A desktop action, desktop change, config change affecting the switcher, shortcut
-recording, or sleep cancels an open picker. While a desktop operation or window
-activation is in flight, new switcher gestures pass through. Discovery runs on a
+recording, or sleep cancels an open picker and queued gestures. While a desktop
+operation is in flight, new switcher gestures pass through. During discovery or
+window activation, complete gestures are queued and processed in order. Activation
+is complete only after the exact selected window is confirmed focused; a failure
+reports an error and clears queued gestures. Already queued gestures reuse the
+last catalog, and every activation revalidates its exact target. Discovery runs on a
 serial worker, outside the keyboard callback. A quick Option release is retained
 until discovery finishes; cancelling invalidates that result. Switcher startup
 failures appear in the menu status, Settings, and doctor, while desktop shortcuts
@@ -391,7 +410,9 @@ symlinks, hotkey rollback and held keys, gesture golden bytes, display selection
 unavailable Accessibility focus, move/follow/focus failures, and the bounded action
 queue. Switcher tests cover active-window-first ordering, second-item selection,
 cycling, wrapping, arrow navigation, configurable shortcuts, commit/cancel, held keys,
-modifier release order, and host blocking. Configuration tests cover switcher defaults,
+modifier release order, host blocking, repeated two-window toggling despite reordered
+snapshots, queued gestures, exact focus acknowledgments, and cancellation/failure
+history retention. Configuration tests cover switcher defaults,
 scope and shortcut validation, chord conflicts, and settings/comment retention.
 The IPC integration test uses temporary local sockets. Tests never post gestures
 or move windows.
@@ -424,6 +445,9 @@ The following checks cover live behavior beyond the automated suite:
    Check quick taps while discovery is pending and close the selected window before
    releasing Option. Change the switcher shortcut in Settings and in the config;
    confirm navigation, modifier release, and Escape work with the new chord.
+   Repeatedly press and release Option+Tab; confirm it alternates the same two windows
+   both within one app and across apps, including when a third window belongs to the
+   app being activated. Hold Option and press Tab to confirm list cycling still works.
 10. Test both scopes with multiple desktops, fullscreen apps, and separate displays.
     Change scope and enabled state through both Settings and the file, including
     while the picker is open. Record a desktop shortcut while Option+Tab is held.

@@ -1,0 +1,34 @@
+#pragma once
+
+#include "session.h"
+#include <deque>
+
+namespace spacewing::switcher {
+enum class Phase { Idle, Discovering, Picking, Activating };
+
+// Serializes switcher gestures across asynchronous discovery and focus changes.
+// The native service supplies snapshots and acknowledges the exact focused window.
+class Controller {
+public:
+    void accept(Intent intent);
+    void discovered(std::vector<Candidate> windows, std::optional<WindowID> focused);
+    bool activated(WindowID focused);
+    void cancel();
+    Phase phase() const { return phase_; }
+    const Session &session() const { return session_; }
+    std::optional<WindowID> focused() const { return current_; }
+    std::optional<WindowID> target() const { return target_; }
+
+private:
+    void advance(bool reuseCatalog = false);
+    void open(std::vector<Candidate> windows, std::optional<WindowID> focused);
+    void remember(WindowID focused);
+    Session session_;
+    std::deque<Intent> pending_;
+    std::vector<WindowID> history_;
+    std::vector<Candidate> catalog_;
+    std::optional<WindowID> current_;
+    std::optional<WindowID> target_;
+    Phase phase_ = Phase::Idle;
+};
+} // namespace spacewing::switcher
