@@ -28,12 +28,11 @@ std::optional<Window> resolveFocus(bool requireWindow, std::string &lastDisplay,
         lastDisplay = queries.cursor();
     return window;
 }
-void validateMove(const MovePlan &plan, const std::vector<uint64_t> &membership, bool sourceDesktop,
-                  bool targetDesktop, bool fullscreen) {
-    if (!plan.window || plan.source == plan.target)
+void validateMove(const MovePlan &plan, const std::vector<uint64_t> &membership, bool fullscreen) {
+    if (!plan.window || !plan.source || !plan.target || plan.source == plan.target)
         throw Error("Invalid window move");
-    if (fullscreen || !sourceDesktop || !targetDesktop)
-        throw Error("Carrying requires an ordinary window and neighboring ordinary desktops");
+    if (fullscreen)
+        throw Error("Moving fullscreen windows is not supported");
     if (membership != std::vector<uint64_t>{plan.source})
         throw Error("The focused window must belong only to the current desktop; all-desktop "
                     "windows cannot be carried");
@@ -77,13 +76,16 @@ Outcome Controller::execute(const Request &request) {
             outcome.reply.output = "At boundary; " + before.summary() + "\n";
         return outcome;
     }
+    bool fullscreenTarget = false;
     if (carries(request.action)) {
         if (!window)
             throw Error("No focused window to carry");
-        if (!canMoveWindows())
-            throw Error("Native window move is unavailable; ordinary switching is still available");
         validateMove({window->id, before.id(), *target}, windowSpaces(window->id),
-                     isDesktop(before.id()), isDesktop(*target), window->fullscreen);
+                     window->fullscreen);
+        fullscreenTarget = !isDesktop(*target);
+        if (!canMoveWindows(fullscreenTarget))
+            throw Error("Native window move is unavailable for this destination; ordinary "
+                        "switching is still available");
     }
     auto events = gestureEvents(direction(request.action), needsAugmentation(osVersion()),
                                 naturalScrolling());
@@ -107,11 +109,12 @@ Outcome Controller::execute(const Request &request) {
         outcome.postMilliseconds = (now() - start) * 1000;
     };
     if (carries(request.action)) {
+        // A window can retain AX focus while being behind the fullscreen app.
         carryWindow({window->id, before.id(), *target},
-                    {[&] { submitWindowMove(window->id, *target); },
+                    {[&] { submitWindowMove(window->id, *target, fullscreenTarget); },
                      [&] { return windowSpaces(window->id); },
                      [&] { return snapshot(before.display).id(); }, post,
-                     [&] { restoreFocus(*window); }, now, waitObservation});
+                     [&] { restoreFocus(*window, fullscreenTarget); }, now, waitObservation});
     } else {
         post();
         const auto deadline = now() + 1;

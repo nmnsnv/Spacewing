@@ -40,9 +40,9 @@ struct FocusUnavailable : Error {
     using Error::Error;
 };
 std::optional<Window> focusedWindow();
-void restoreFocus(const Window &window);
-bool canMoveWindows();
-void submitWindowMove(uint32_t window, uint64_t space);
+void restoreFocus(const Window &window, bool forceRaise = false);
+bool canMoveWindows(bool fullscreenTarget = false);
+void submitWindowMove(uint32_t window, uint64_t space, bool fullscreenTarget = false);
 void activateEmptyDesktop(const std::string &display, uint64_t space);
 void observeWorkspace(const std::function<void()> &changed, const std::function<void()> &woke);
 

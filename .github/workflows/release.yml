@@ -2,6 +2,12 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version increment for a new release (existing tags are reused)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
   push:
     tags: ['v*']
 
@@ -18,14 +24,39 @@ defaults:
     shell: bash
 
 jobs:
+  version:
+    name: Select release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source and release tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select or reuse version
+        id: version
+        env:
+          VERSION_BUMP: ${{ inputs.bump || 'patch' }}
+          VERSION_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          version=$(python3 scripts/release_version.py --bump "$VERSION_BUMP" --tag "$VERSION_TAG")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: v$version" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build and test release
+    needs: version
     uses: ./.github/workflows/ci.yml
     with:
       release: true
+      version: ${{ needs.version.outputs.version }}
 
   release:
-    name: Draft GitHub Release
+    name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -44,7 +75,7 @@ jobs:
         with:
           name: Spacewing-macOS-universal
 
-      - name: Create or update draft release
+      - name: Publish release with tested app
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -56,7 +87,7 @@ jobs:
             tag_exists=true
             tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
             if [[ "$tag_commit" != "$RELEASE_COMMIT" ]]; then
-              echo '::error::Release tag points to a different commit. Bump the app version or run Release from that tag.'
+              echo '::error::Release tag points to a different commit. Run Release again to select a new version, or run it from that tag.'
               exit 1
             fi
           fi
@@ -79,5 +110,6 @@ jobs:
               --draft --verify-tag --target "$RELEASE_COMMIT" --title "Spacewing $RELEASE_TAG" --generate-notes \
               --notes 'Universal Mac development build. Ad-hoc signed; not notarized. See the README for Developer ID signing and notarization.'
           fi
-          printf '[Review draft release](%s/%s/releases)\n' \
-            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+          gh release edit "$RELEASE_TAG" --draft=false
+          printf '[Published release](%s/%s/releases/tag/%s)\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"

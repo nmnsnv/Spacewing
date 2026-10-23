@@ -15,7 +15,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (command.name == "version") {
-            std::cout << "spacewing 0.1.0\n";
+            std::cout << "spacewing " SPACEWING_VERSION "\n";
             return 0;
         }
         if (command.name == "check-config") {

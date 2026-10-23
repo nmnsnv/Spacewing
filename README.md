@@ -132,31 +132,37 @@ test suite, and separately builds and tests the workspace and switcher packages.
 Successful runs provide a **Spacewing-macOS-universal** artifact for 14 days. Download
 and extract the artifact, then extract the app ZIP inside it.
 
-To release the app, open **Actions → Release → Run workflow**, select the branch
-or tag to release, and run it. The separate [Release](.github/workflows/release.yml)
-workflow runs the same build and tests as CI, then creates a draft GitHub Release
-with the tested app and generated release notes. It derives the tag from the app
-version (for example, **v0.1.0**) and automatically creates that Git tag at the exact
-tested commit before creating the draft, so you do not need to push a tag first.
-The Release action appears after its workflow is pushed to the repository's
-default branch.
+To release the app, open **Actions → Release → Run workflow**, select the branch,
+choose **patch** (the default), **minor**, or **major**, and run it. The workflow
+automatically increments the highest stable **vX.Y.Z** tag. For example, a patch
+release after **v0.1.0** becomes **v0.1.1**; minor becomes **v0.2.0**, and major
+becomes **v1.0.0**. Without release tags, [VERSION](VERSION) supplies the baseline.
+Prerelease and unrelated tags are ignored.
 
-Review the draft in GitHub Releases and publish when ready. Re-running Release
-updates an existing draft's ZIP; published release assets are never replaced.
-An existing tag must point to the tested commit; use a new app version or select
-that tag when running the workflow.
+The [Release](.github/workflows/release.yml) workflow builds and tests the selected
+version using the same workflow as CI, then creates its tag at the exact tested
+commit and publishes the tested app with generated release notes. CMake sets the
+app, settings helper, CLI, and bundle build versions together. No manual edits to
+version fields or version-bump commits are needed. The Release action appears
+after its workflow is pushed to the repository's default branch.
 
-Before releasing a new version, update **CMakeLists.txt**, **src/main.cc**,
-**resources/Info.plist.in**, and **resources/SettingsInfo.plist** together, then
-commit and push. CMake, app, helper, and CLI versions must match exactly.
+The workflow stages the ZIP in a draft and automatically publishes it after the
+upload succeeds. If the selected commit already has a stable release tag, the
+workflow reuses it, allowing a failed attempt's draft to be updated and published.
+Published release assets are never replaced; new releases need new commits.
 
-Pushing a version tag also starts the Release workflow automatically. If you
-prefer this path, the tag must match the app version:
+Pushing a version tag, or manually selecting one in **Run workflow**, builds that
+exact version without incrementing it:
 
 ~~~sh
-git tag -a v0.1.0 -m "Spacewing v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "Spacewing v0.2.0"
+git push origin v0.2.0
 ~~~
+
+Local builds derive their version from the latest reachable release tag, falling
+back to **VERSION** without Git metadata. To build a specific version explicitly,
+pass **-DSPACEWING_VERSION=0.2.0** to CMake. Release CI checks that all built
+version fields match before publishing.
 
 The workflow uses GitHub's built-in token and requires no extra secrets. Its app
 downloads use ad-hoc signing and are not notarized; they are development builds.
@@ -379,20 +385,25 @@ CLI client does not need a separate grant.
   is the initial fallback. Carrying still requires an identifiable focused window.
 - One action runs per key press. Holding the key does not repeat. Pending actions
   execute in order, up to 32; destinations are resolved when each action starts.
-- Left/right follow Mission Control order without wrapping. Ordinary switching
-  includes fullscreen Spaces; carrying requires ordinary desktops and a window
-  assigned only to the current desktop.
-- Carrying moves **one focused window**, observes its membership, follows it, and
-  restores focus. It avoids an extra gesture if macOS already followed the move.
+- Left/right follow Mission Control order without wrapping, including fullscreen
+  Spaces. Carrying requires a window assigned only to the current Space.
+- Carrying a regular window moves **one focused window**, observes its membership,
+  follows it, and restores focus. It can float over a fullscreen app on the
+  neighboring Space, and can be carried back out. It avoids an extra gesture if
+  macOS already followed the move.
   A failed move does not trigger a switch. An interruption after moving reports
   the partial result without trying to undo it.
+- Carrying a fullscreen window is unsupported. Its window and Space stay in place.
 - Gestures follow the pointer at the macOS level. Spacewing temporarily routes it
   to the chosen display when necessary and restores it unless you moved it yourself.
 - The resident stays windowless. Settings runs in an on-demand helper, so empty
   desktop handling does not bring the settings window forward.
 
 The backend sends native Dock gestures and uses WindowServer operations to carry
-windows between Spaces. It runs with SIP enabled and needs Accessibility access.
+windows between Spaces. Fullscreen destinations use a direct Space-membership
+operation because the managed desktop move rejects ordinary windows such as
+Terminal's. The controller waits until membership belongs only to the destination
+before following and raising the window. It runs with SIP enabled and needs Accessibility access.
 It does not require screen capture access or change window sizes or desktop counts.
 
 ## Validation
@@ -407,8 +418,10 @@ ctest --test-dir build --output-on-failure
 
 Tests exercise command parsing, TOML validation and comment retention, atomic saves,
 symlinks, hotkey rollback and held keys, gesture golden bytes, display selection,
-unavailable Accessibility focus, move/follow/focus failures, and the bounded action
-queue. Switcher tests cover active-window-first ordering, second-item selection,
+unavailable Accessibility focus, move/follow/focus failures, removal of source
+membership before following fullscreen moves, fullscreen window rejection, and
+the bounded action queue. Switcher tests cover
+active-window-first ordering, second-item selection,
 cycling, wrapping, arrow navigation, configurable shortcuts, commit/cancel, held keys,
 modifier release order, host blocking, repeated two-window toggling despite reordered
 snapshots, queued gestures, exact focus acknowledgments, and cancellation/failure
@@ -428,6 +441,9 @@ The following checks cover live behavior beyond the automated suite:
    A held shortcut should move once.
 4. Carry the terminal both ways and type immediately after landing. Check visual
    latency and keyboard focus; test two windows of the same app.
+   Carry a regular window onto a fullscreen app's Space; confirm it floats above
+   the app, accepts typing, and can be carried back out. With the fullscreen app
+   focused, try carrying both ways; confirm the window and Space stay in place.
 5. On multiple displays, leave the pointer away from the focused window. Test both
    separate and shared Spaces, and empty desktops without bounce-back.
 6. Change shortcuts through Settings and the file. Try a duplicate binding and an

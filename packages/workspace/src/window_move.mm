@@ -11,6 +11,12 @@
 - (instancetype)initWithWindows:(NSArray<NSNumber *> *)windows spaceID:(uint64_t)space;
 @end
 
+@protocol BFSpaceMembershipMove
+- (instancetype)initWithSpaceID:(uint64_t)space
+                        windows:(NSArray<NSNumber *> *)windows
+                        options:(uint32_t)options;
+@end
+
 typedef int64_t (*BFPerformOperation)(void *);
 
 // The dispatcher is a local C++ symbol, not a dlsym-exported C function.
@@ -87,23 +93,38 @@ static BFPerformOperation performer(void) {
     return perform;
 }
 
-static Class operationClass(void) {
-    return NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
+static Class operationClass(bool fullscreenTarget) {
+    return NSClassFromString(fullscreenTarget
+                                 ? @"SLSBridgedSpaceAddWindowsAndRemoveFromSpacesOperation"
+                                 : @"SLSBridgedMoveWindowsToManagedSpaceOperation");
 }
 
-bool BFCanMoveWindows(void) {
+bool BFCanMoveWindows(bool fullscreenTarget) {
+    SEL initializer = fullscreenTarget ? @selector(initWithSpaceID:windows:options:)
+                                       : @selector(initWithWindows:spaceID:);
     return performer() != NULL &&
-           [operationClass() instancesRespondToSelector:@selector(initWithWindows:spaceID:)];
+           [operationClass(fullscreenTarget) instancesRespondToSelector:initializer];
 }
 
-bool BFSubmitWindowMove(uint32_t windowID, uint64_t spaceID) {
+bool BFSubmitWindowMove(uint32_t windowID, uint64_t spaceID, bool fullscreenTarget) {
     @autoreleasepool {
-        if (!BFCanMoveWindows())
+        if (!BFCanMoveWindows(fullscreenTarget))
             return false;
         @try {
-            id<BFManagedSpaceMove> operation =
-                [(id<BFManagedSpaceMove>)[operationClass() alloc] initWithWindows:@[ @(windowID) ]
-                                                                          spaceID:spaceID];
+            id operation;
+            if (fullscreenTarget) {
+                // The managed move refuses ordinary app windows on fullscreen Spaces.
+                // Add the window directly, removing membership from all other Space
+                // types (mask 0x7). A zero mask leaves it on the source desktop too.
+                operation = [(id<BFSpaceMembershipMove>)[operationClass(true) alloc]
+                    initWithSpaceID:spaceID
+                            windows:@[ @(windowID) ]
+                            options:0x7];
+            } else {
+                operation = [(id<BFManagedSpaceMove>)[operationClass(false) alloc]
+                    initWithWindows:@[ @(windowID) ]
+                            spaceID:spaceID];
+            }
             if (!operation)
                 return false;
             // The private return value is undocumented; observed Space membership

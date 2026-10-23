@@ -143,11 +143,16 @@ void spacesAndMoves() {
     rejects([&] { selectSnapshot({displays[0]}, "disconnected"); }, 75,
             "do not switch remaining display");
     MovePlan plan{100, 11, 12};
-    validateMove(plan, {11}, true, true, false);
+    validateMove(plan, {11}, false);
+    // Space type does not restrict regular windows floating into or out of fullscreen Spaces.
+    validateMove({100, 12, 11}, {12}, false);
     for (auto membership : std::vector<std::vector<uint64_t>>{{11, 12}, {13}, {}})
-        rejects([&] { validateMove(plan, membership, true, true, false); }, 1, "membership");
-    rejects([&] { validateMove(plan, {11}, true, false, false); }, 1, "fullscreen destination");
-    rejects([&] { validateMove(plan, {11}, true, true, true); }, 1, "fullscreen window");
+        rejects([&] { validateMove(plan, membership, false); }, 1, "membership");
+    for (auto membership : std::vector<std::vector<uint64_t>>{{11}, {11, 12}, {13}, {}})
+        rejects([&] { validateMove(plan, membership, true); }, 1, "fullscreen window");
+    for (auto invalid :
+         {MovePlan{0, 11, 12}, MovePlan{100, 11, 11}, MovePlan{100, 0, 12}, MovePlan{100, 11, 0}})
+        rejects([&] { validateMove(invalid, {11}, false); }, 1, "invalid move");
     double time = 0;
     uint64_t current = 11;
     bool following = false;
@@ -168,6 +173,31 @@ void spacesAndMoves() {
                         }};
     carryWindow(plan, actions);
     check(log == std::vector<std::string>{"move", "follow", "focus"}, "move, follow, focus order");
+    log.clear();
+    time = 0;
+    current = 11;
+    following = false;
+    actions.membership = [&] {
+        return time >= .02 ? std::vector<uint64_t>{12} : std::vector<uint64_t>{11, 12};
+    };
+    actions.follow = [&] {
+        check(time >= .02, "fullscreen carry waits for source membership to be removed");
+        following = true;
+        log.push_back("follow");
+    };
+    carryWindow(plan, actions);
+    check(log == std::vector<std::string>{"move", "follow", "focus"},
+          "temporary membership in both Spaces settles before following");
+    log.clear();
+    time = 0;
+    actions.membership = [] { return std::vector<uint64_t>{11, 12}; };
+    rejects([&] { carryWindow(plan, actions); }, 75, "source membership was not removed");
+    check(log == std::vector<std::string>{"move"},
+          "a window left on both Spaces never triggers a follow gesture or focus");
+    actions.follow = [&] {
+        following = true;
+        log.push_back("follow");
+    };
     log.clear();
     time = 0;
     actions.membership = [] { return std::vector<uint64_t>{12}; };
@@ -211,6 +241,8 @@ int main() {
         std::cout << "Passed " << checks << " workspace checks; no windows moved.\n";
         std::cout << "Read-only move API probe: "
                   << (canMoveWindows() ? "available" : "unavailable") << "\n";
+        std::cout << "Read-only fullscreen destination API probe: "
+                  << (canMoveWindows(true) ? "available" : "unavailable") << "\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
         return 1;

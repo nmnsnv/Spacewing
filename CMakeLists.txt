@@ -1,5 +1,31 @@
 cmake_minimum_required(VERSION 3.25)
-project(Spacewing VERSION 0.1.0 LANGUAGES CXX OBJCXX)
+
+set(SPACEWING_VERSION "" CACHE STRING "App version override; defaults to the latest reachable release tag")
+if(SPACEWING_VERSION STREQUAL "")
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SPACEWING_VERSION LIMIT_COUNT 1)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" tag --merged HEAD --list "v[0-9]*" --sort=-version:refname
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE spacewing_version_tags OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        string(REPLACE "\n" ";" spacewing_version_tags "${spacewing_version_tags}")
+        foreach(spacewing_version_tag IN LISTS spacewing_version_tags)
+            if(spacewing_version_tag MATCHES "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+                string(SUBSTRING "${spacewing_version_tag}" 1 -1 SPACEWING_VERSION)
+                break()
+            endif()
+        endforeach()
+    endif()
+endif()
+if(NOT SPACEWING_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+    message(FATAL_ERROR "SPACEWING_VERSION must have the form 1.2.3")
+endif()
+project(Spacewing VERSION "${SPACEWING_VERSION}" LANGUAGES CXX OBJCXX)
+
+configure_file(resources/Info.plist.in resources/Info.plist @ONLY)
+configure_file(resources/SettingsInfo.plist resources/SettingsInfo.plist @ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,6 +79,7 @@ target_link_libraries(spacewing_host PUBLIC Spacewing::WorkspaceModel
     Spacewing::SwitcherModel Spacewing::SharedMacOS)
 
 add_executable(spacewing src/main.cc src/runtime.cc)
+target_compile_definitions(spacewing PRIVATE SPACEWING_VERSION="${PROJECT_VERSION}")
 target_link_libraries(spacewing PRIVATE spacewing_host Spacewing::Workspace Spacewing::Switcher)
 target_compile_options(spacewing PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(spacewing PROPERTIES
@@ -73,6 +100,7 @@ add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/.bundle-stamp"
     COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/.bundle-stamp"
     DEPENDS spacewing spacewing-settings scripts/package.sh resources/Info.plist.in
         resources/SettingsInfo.plist resources/default.toml THIRD_PARTY_NOTICES.md
+        "${CMAKE_BINARY_DIR}/resources/Info.plist" "${CMAKE_BINARY_DIR}/resources/SettingsInfo.plist"
         "${CMAKE_BINARY_DIR}/signing-config.txt"
     VERBATIM COMMENT "Package and sign Spacewing.app")
 add_custom_target(bundle ALL DEPENDS "${CMAKE_BINARY_DIR}/.bundle-stamp")

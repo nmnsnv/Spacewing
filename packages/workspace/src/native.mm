@@ -270,8 +270,8 @@ std::optional<Window> focusedWindow() {
     result.display = string(name.get());
     return result;
 }
-void restoreFocus(const Window &window) {
-    if (activePID(window.pid)) {
+void restoreFocus(const Window &window, bool forceRaise) {
+    if (!forceRaise && activePID(window.pid)) {
         auto focused = focusElement(window.pid);
         if (focused && windowID(focused.get()) == window.id)
             return;
@@ -317,14 +317,14 @@ std::string diagnostics() {
     }
     return result;
 }
-bool canMoveWindows() {
+bool canMoveWindows(bool fullscreenTarget) {
     static void *library = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
                                   RTLD_LAZY | RTLD_GLOBAL);
-    return library && BFCanMoveWindows();
+    return library && BFCanMoveWindows(fullscreenTarget);
 }
-void submitWindowMove(uint32_t window, uint64_t space) {
+void submitWindowMove(uint32_t window, uint64_t space, bool fullscreenTarget) {
     bool submitted = false;
-    mainSync([&] { submitted = BFSubmitWindowMove(window, space); });
+    mainSync([&] { submitted = BFSubmitWindowMove(window, space, fullscreenTarget); });
     if (!submitted)
         throw Error("Could not submit native window move; no switch gesture posted");
 }

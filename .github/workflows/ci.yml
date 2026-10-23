@@ -11,6 +11,10 @@ on:
         description: Validate release versions and expose the tested tag and commit
         type: boolean
         default: false
+      version:
+        description: App version selected by the release workflow (empty uses Git tags)
+        type: string
+        default: ''
     outputs:
       tag:
         description: Release tag matching the app version
@@ -43,14 +47,21 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Test release version selection
+        run: python3 -B -m unittest discover -s tests -p release_version_tests.py
+
       - name: Configure universal Release build
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
           '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
           -DBUILD_TESTING=ON
+          -DSPACEWING_VERSION="$BUILD_VERSION"
           -DSPACEWING_CODESIGN_IDENTITY=-
           -DSPACEWING_DISTRIBUTION=OFF
 
@@ -79,14 +90,22 @@ jobs:
       - name: Check release versions
         id: version
         if: inputs.release
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           app_version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
             build/Spacewing.app/Contents/Info.plist)
           helper_version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
             build/Spacewing.app/Contents/Helpers/SpacewingSettings.app/Contents/Info.plist)
+          app_build=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' \
+            build/Spacewing.app/Contents/Info.plist)
+          helper_build=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' \
+            build/Spacewing.app/Contents/Helpers/SpacewingSettings.app/Contents/Info.plist)
           project_version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' build/CMakeCache.txt)
           if [[ ! "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || \
+                ( -n "$EXPECTED_VERSION" && "$app_version" != "$EXPECTED_VERSION" ) || \
                 "$project_version" != "$app_version" || "$helper_version" != "$app_version" || \
+                "$app_build" != "$app_version" || "$helper_build" != "$app_version" || \
                 "$(./build/spacewing --version)" != "spacewing $app_version" ]]; then
             echo '::error::CMake, app, settings helper, and CLI versions must match.'
             exit 1

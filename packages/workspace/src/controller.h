@@ -14,8 +14,7 @@ struct MovePlan {
     uint32_t window;
     uint64_t source, target;
 };
-void validateMove(const MovePlan &plan, const std::vector<uint64_t> &membership, bool sourceDesktop,
-                  bool targetDesktop, bool fullscreen);
+void validateMove(const MovePlan &plan, const std::vector<uint64_t> &membership, bool fullscreen);
 struct MoveActions {
     std::function<void()> submit;
     std::function<std::vector<uint64_t>()> membership;
