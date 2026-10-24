@@ -201,8 +201,17 @@ bool activateWindow(WindowID target, Scope scope, const std::atomic_bool &cancel
             focus();
             if (cancelled)
                 return false;
-            if (frontmostPID() != target.pid && !activatePID(target.pid))
-                throw std::runtime_error("Cannot activate the selected application");
+            if (frontmostPID() != target.pid && !activatePID(target.pid)) {
+                if (cancelled)
+                    return false;
+                // AppKit may refuse a background resident's activation request.
+                // The user explicitly selected this window, so try the permitted
+                // Accessibility activation path and still verify exact focus below.
+                if (frontmostPID() != target.pid &&
+                    AXUIElementSetAttributeValue(app.get(), kAXFrontmostAttribute,
+                                                 kCFBooleanTrue) != kAXErrorSuccess)
+                    throw std::runtime_error("Cannot activate the selected application");
+            }
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
             bool raisedAfterActivation = false;
             unsigned matches = 0;
