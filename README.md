@@ -224,10 +224,10 @@ Choose **Window layout** in Settings, or edit **~/.spacewing** under **[switcher
 layout = "grid" # Compact live previews; use "list" for the original layout.
 ~~~
 
-**grid** is the default. It fits all eligible windows on screen and uses circular
-arrow navigation within each row or column. **list** restores the original app-icon
-and title list, showing up to nine rows and keeping the selection visible as you
-cycle. Up/Down move one row and wrap; Left/Right retain their original pass-through
+**grid** is the default. It fits all eligible windows on screen. Left/Right cycle
+through all windows, while Up/Down wrap within each column. **list** restores the
+original app-icon and title list, showing up to nine rows and keeping the selection
+visible as you cycle. Up/Down move one row and wrap; Left/Right retain their original pass-through
 behavior unless assigned as a switcher shortcut. List mode does not capture windows
 or require Screen Recording access. Layout changes reload automatically and close
 an open picker; the next invocation uses the chosen layout. Saving other options in
@@ -236,11 +236,14 @@ Settings exposes the same layout selection as the file.
 The active window appears first, followed by the previously focused window when
 it is eligible. Opening the switcher selects the second window (or the only window
 if there is just one). Hold **Option** and press **Tab** to open
-it. In grid mode, keep Option held and use **Left/Right** to move across columns or **Up/Down**
-to move between rows. Arrows wrap within their row or column: Up from the top
-selects the lowest occupied cell, Down returns to the top, and Left/Right wrap
-across the row. Missing cells in the final row are skipped. Press Tab again to
-cycle through all windows and add **Shift** to reverse. Release Option to activate
+it. In grid mode, keep Option held and use **Right** to select the next window,
+just like Option+Tab, or **Left** to select the previous one, like Option+Shift+Tab.
+Both cycle through all rows: Right from the last window wraps to the first, and
+Left from the first wraps to the last.
+Use **Up/Down** to move between rows within the same column: Up from the top
+selects the lowest occupied cell, and Down returns to the top. Missing cells in
+the final row are skipped. Press Tab again to cycle through all windows and add
+**Shift** to reverse. Release Option to activate
 the selection, or press **Escape** to close without activating it. Held arrows repeat;
 a held shortcut key does not repeat. The grid shows compact live previews, app icons, and window
 titles without taking keyboard focus. It prefers four columns and adjusts the grid
@@ -501,8 +504,9 @@ unavailable Accessibility focus, move/follow/focus failures, removal of source
 membership before following fullscreen moves, fullscreen window rejection, and
 the bounded action queue. Switcher tests cover
 active-window-first ordering, second-item selection,
-cycling, wrapping, circular spatial arrow navigation and partial-row handling, grids with 1–100
-windows across different screen sizes, configurable shortcuts, current-app filtering,
+cycling, wrapping, Left/Right cycling across rows, vertical column navigation and
+partial-row handling, grids with 1–100 windows across different screen sizes,
+configurable shortcuts, current-app filtering,
 mixed-mode queued gestures, commit/cancel, held keys,
 modifier release order, host blocking, repeated two-window toggling despite reordered
 snapshots, queued gestures, exact focus acknowledgments, and cancellation/failure
@@ -561,8 +565,10 @@ The following checks cover live behavior beyond the automated suite:
     while the picker is open. Record a desktop shortcut while Option+Tab is held.
     Check sleep/wake, permission revocation, and an unresponsive app.
 11. Open enough windows for several grid rows and a partially filled final row.
-    Verify all tiles fit on a small display, Left/Right wrap within a row, and
-    Up/Down wrap within their column. Check both one-window and current-app grids.
+    Verify all tiles fit on a small display, Right selects the next window and Left
+    selects the previous one across all rows, and both wrap between the first and
+    last window. Verify Up/Down wrap within their column. Check both one-window and
+    current-app grids.
     Enable Window Preview Access, restart if requested, and confirm that typing,
     scrolling, or video updates the previews. Check the fallback with access denied
     or revoked, and verify capture stops after release, Escape, scope changes, and

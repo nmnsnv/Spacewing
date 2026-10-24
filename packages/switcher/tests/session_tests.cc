@@ -38,14 +38,15 @@ void previewGridAndNavigation() {
                     moved.move(direction, grid.columns);
                     const auto target = moved.selected();
                     check(target < count, "arrow movement never selects an empty cell");
-                    if (target != selected) {
-                        if (direction == Direction::Left || direction == Direction::Right)
-                            check(target / grid.columns == selected / grid.columns,
-                                  "horizontal arrows wrap within the same occupied row");
-                        else
-                            check(target % grid.columns == selected % grid.columns,
-                                  "vertical arrows wrap within the same occupied column");
-                    }
+                    if (direction == Direction::Left)
+                        check(target == (selected + count - 1) % count,
+                              "Left selects the previous window like Option+Shift+Tab, including wrap");
+                    else if (direction == Direction::Right)
+                        check(target == (selected + 1) % count,
+                              "Right selects the next window like Option+Tab, including wrap");
+                    else
+                        check(target % grid.columns == selected % grid.columns,
+                              "vertical arrows wrap within the same occupied column");
                     const auto opposite = direction == Direction::Left ? Direction::Right
                         : direction == Direction::Right ? Direction::Left
                         : direction == Direction::Up ? Direction::Down : Direction::Up;
@@ -68,7 +69,7 @@ void previewGridAndNavigation() {
     controller.discovered(catalog, catalog[0].id);
     check(controller.session().selected() == 5, "queued Down moves one complete grid row");
     controller.accept(Intent::Right);
-    check(controller.session().selected() == 6, "Right moves to the adjacent column");
+    check(controller.session().selected() == 6, "Right selects the next window");
     controller.accept(Intent::Down);
     check(controller.session().selected() == 2,
           "Down wraps to the top when the final row has no cell in this column");
@@ -77,22 +78,41 @@ void previewGridAndNavigation() {
     check(controller.session().selected() == 9, "Up from the top reaches the lowest occupied cell");
     controller.accept(Intent::Down);
     check(controller.session().selected() == 1, "Down from the lowest cell returns to the top");
+    controller.accept(Intent::Left);
+    controller.accept(Intent::Left);
+    check(controller.session().selected() == 9, "Left wraps from the first window to the last");
+    controller.accept(Intent::Right);
+    check(controller.session().selected() == 0, "Right wraps from the last window to the first");
+    controller.accept(Intent::Right);
     controller.accept(Intent::Commit);
-    check(controller.target() == catalog[1].id, "release commits the exact spatial selection");
+    check(controller.target() == catalog[1].id, "release commits the exact selected window");
     Session session;
     session.begin(catalog, catalog[0].id);
-    session.move(Direction::Left, 4);
-    check(session.selected() == 0, "Left moves to the previous column");
-    session.move(Direction::Left, 4);
-    check(session.selected() == 3, "Left from the first column wraps to the row's last item");
     session.move(Direction::Right, 4);
-    check(session.selected() == 0, "Right from the last column wraps to the row's first item");
+    check(session.selected() == 2, "Right selects the next window");
+    session.move(Direction::Right, 4);
+    session.move(Direction::Right, 4);
+    check(session.selected() == 4, "Right crosses from the end of a row to the next row");
+    session.move(Direction::Left, 4);
+    check(session.selected() == 3, "Left crosses from the start of a row to the previous row");
+    session.move(Direction::Left, 4);
+    session.move(Direction::Left, 4);
+    session.move(Direction::Left, 4);
+    check(session.selected() == 0, "Left selects the previous window");
+    session.move(Direction::Left, 4);
+    check(session.selected() == 9, "Left from the first window wraps to the last window");
+    session.move(Direction::Right, 4);
+    check(session.selected() == 0, "Right from the last window wraps to the first window");
     session.move(Direction::Up, 4);
     check(session.selected() == 8, "Up reaches the final partial row in the same column");
     session.move(Direction::Left, 4);
-    check(session.selected() == 9, "horizontal wrap in a partial row skips missing cells");
+    check(session.selected() == 7, "Left from the partial row reaches the previous full row");
     session.move(Direction::Right, 4);
-    check(session.selected() == 8, "reverse horizontal wrap stays inside the partial row");
+    check(session.selected() == 8, "Right from the full row reaches the final partial row");
+    session.move(Direction::Right, 4);
+    check(session.selected() == 9, "Right reaches the final window in a partial row");
+    session.move(Direction::Right, 4);
+    check(session.selected() == 0, "Right skips missing cells when wrapping to the first window");
     session.begin({catalog[0]}, catalog[0].id);
     for (auto direction : {Direction::Left, Direction::Right, Direction::Up, Direction::Down}) {
         session.move(direction, 4);

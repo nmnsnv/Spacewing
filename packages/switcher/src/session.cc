@@ -25,14 +25,12 @@ void Session::move(Direction direction, size_t columns) {
     if (!active() || !columns)
         return;
     const auto column = selected_ % columns;
-    const auto rowStart = selected_ - column;
-    const auto rowCount = std::min(columns, windows_.size() - rowStart);
     switch (direction) {
     case Direction::Left:
-        selected_ = column ? selected_ - 1 : rowStart + rowCount - 1;
+        step(true);
         break;
     case Direction::Right:
-        selected_ = column + 1 < rowCount ? selected_ + 1 : rowStart;
+        step(false);
         break;
     case Direction::Up:
         selected_ = selected_ >= columns
