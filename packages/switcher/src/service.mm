@@ -384,7 +384,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                 const auto generation = self.generation;
                 dispatch_async(dispatch_get_main_queue(), ^{
                   if (auto owner = weak.lock(); owner && owner->generation == generation)
-                      owner->accept(decision.intent);
+                      owner->accept(decision.intent, decision.mode);
                 });
             }
             return decision.consume ? nullptr : event;
@@ -393,13 +393,13 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
             return event;
         }
     }
-    void accept(Intent intent) {
+    void accept(Intent intent, Mode mode) {
         try {
             if (intent == Intent::Cancel || host.unavailable()) {
                 cancel();
                 return;
             }
-            controller.accept(intent);
+            controller.accept(intent, mode);
             pump();
         } catch (const std::exception &e) {
             cancel();
@@ -466,7 +466,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                     self->cancel();
                     return;
                 }
-                self->controller.discovered(std::move(result.windows), result.focused);
+                self->controller.discovered(std::move(result.windows), result.focused, frontmost);
                 self->pump();
               });
           }
@@ -597,8 +597,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
 Service::Service(Host host) : impl_(std::make_shared<Impl>(std::move(host))) {}
 Service::~Service() { impl_->stop(); }
 void Service::configure(Options options) {
-    if (parseShortcut(options.shortcut.text()) != options.shortcut)
-        throw std::invalid_argument("Invalid window switcher shortcut");
+    validateShortcuts(options.shortcuts);
     if (options == impl_->options && (!options.enabled || impl_->tap))
         return;
     if (options.enabled)
@@ -606,7 +605,7 @@ void Service::configure(Options options) {
     else
         impl_->stop();
     impl_->cancel();
-    impl_->keyboard.configure(options.shortcut);
+    impl_->keyboard.configure(options.shortcuts);
     impl_->options = options;
 }
 void Service::cancel() { impl_->cancel(); }

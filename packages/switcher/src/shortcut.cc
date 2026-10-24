@@ -61,6 +61,8 @@ std::string Shortcut::text() const {
 
 Shortcut parseShortcut(const std::string &text) {
     auto value = trim(text);
+    if (value.empty())
+        return {};
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     Shortcut result{0, Key::Other};
@@ -94,5 +96,31 @@ Shortcut parseShortcut(const std::string &text) {
     if (!result.modifiers || result.key == Key::Other)
         throw std::invalid_argument("Use a key with at least one modifier for the window switcher");
     return result;
+}
+Shortcuts defaultShortcuts() {
+    Shortcuts result;
+    for (size_t i = 0; i < shortcutActions.size(); ++i)
+        result[i] = parseShortcut(shortcutActions[i].defaultChord);
+    return result;
+}
+bool matchesShortcut(Shortcut shortcut, Key key, unsigned modifiers) {
+    return shortcut.enabled() && key == shortcut.key &&
+           (modifiers & shortcut.modifiers) == shortcut.modifiers &&
+           (modifiers & ~(shortcut.modifiers | Shift)) == 0;
+}
+void validateShortcuts(const Shortcuts &shortcuts) {
+    for (size_t i = 0; i < shortcuts.size(); ++i) {
+        const auto shortcut = shortcuts[i];
+        if (parseShortcut(shortcut.text()) != shortcut)
+            throw std::invalid_argument(std::string("Invalid switcher.") +
+                                        shortcutActions[i].setting);
+        for (size_t j = 0; j < i; ++j)
+            if (shortcut.enabled() && shortcuts[j].enabled() && shortcut.key == shortcuts[j].key &&
+                (shortcut.modifiers & ~unsigned(Shift)) ==
+                    (shortcuts[j].modifiers & ~unsigned(Shift)))
+                throw std::invalid_argument(
+                    std::string("Conflicting switcher shortcuts: ") + shortcutActions[j].setting +
+                    " and " + shortcutActions[i].setting + " (including Shift reverse)");
+    }
 }
 } // namespace spacewing::switcher

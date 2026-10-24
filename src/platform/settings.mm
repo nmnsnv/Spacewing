@@ -1,4 +1,5 @@
 #include "application.h"
+#include "config/config.h"
 #include "ipc/socket.h"
 #include "shortcut.h"
 #include "shortcuts.h"
@@ -8,6 +9,7 @@
 using namespace spacewing;
 using namespace spacewing::workspace;
 namespace {
+constexpr auto workspaceRows = workspace::actionDefinitions.size();
 NSString *ns(const std::string &text) {
     return [NSString stringWithUTF8String:text.c_str()] ?: @"";
 }
@@ -73,8 +75,10 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
 @implementation SettingsDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     recordingRow_ = -1;
+    const CGFloat extraHeight = 42 * (switcher::shortcutActions.size() - 1);
+    const CGFloat height = 340 + 42 * (workspaceRows + switcher::shortcutActions.size());
     window_ =
-        [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 550)
+        [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, height)
                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                               NSWindowStyleMaskMiniaturizable
                                       backing:NSBackingStoreBuffered
@@ -83,21 +87,20 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     window_.delegate = self;
     window_.releasedWhenClosed = NO;
     auto view = window_.contentView;
-    auto title = label(@"Workspace shortcuts", NSMakeRect(24, 499, 650, 28));
+    auto title = label(@"Workspace shortcuts", NSMakeRect(24, height - 51, 650, 28));
     title.font = [NSFont boldSystemFontOfSize:20];
     [view addSubview:title];
     [view
         addSubview:label(@"Shortcuts follow the focused window’s display. One move per key press.",
-                         NSMakeRect(24, 467, 650, 24))];
-    NSArray<NSString *> *names =
-        @[ @"Switch left", @"Switch right", @"Carry window left", @"Carry window right" ];
+                         NSMakeRect(24, height - 83, 650, 24))];
     NSMutableArray *fields = [NSMutableArray new];
     NSMutableArray *records = [NSMutableArray new];
-    for (NSInteger i = 0; i < 4; ++i) {
-        CGFloat y = 417 - i * 42;
-        [view addSubview:label(names[i], NSMakeRect(24, y + 3, 155, 24))];
+    const auto addRow = [&](const char *name, const char *defaultChord, CGFloat y) {
+        const NSInteger i = fields.count;
+        [view addSubview:label(ns(name), NSMakeRect(24, y + 3, 155, 24))];
         NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(184, y, 310, 28)];
         field.placeholderString = @"Disabled";
+        field.toolTip = ns(std::string("Default: ") + defaultChord);
         [fields addObject:field];
         [view addSubview:field];
         NSButton *record =
@@ -108,22 +111,18 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
         NSButton *clear = button(@"Clear", NSMakeRect(598, y - 2, 76, 32), self, @selector(clear:));
         clear.tag = i;
         [view addSubview:clear];
+    };
+    for (size_t i = 0; i < workspaceRows; ++i) {
+        const auto &action = workspace::actionDefinitions[i];
+        addRow(action.label, action.defaultChord, height - 133 - i * 42);
     }
     switcherEnabled_ = [NSButton checkboxWithTitle:@"Enable window switcher" target:nil action:nil];
-    switcherEnabled_.frame = NSMakeRect(24, 235, 430, 26);
+    switcherEnabled_.frame = NSMakeRect(24, 235 + extraHeight, 430, 26);
     [view addSubview:switcherEnabled_];
-    [view addSubview:label(@"Switcher shortcut", NSMakeRect(24, 199, 155, 24))];
-    auto switcherField = [[NSTextField alloc] initWithFrame:NSMakeRect(184, 196, 310, 28)];
-    switcherField.placeholderString = @"option+tab";
-    [fields addObject:switcherField];
-    [view addSubview:switcherField];
-    auto switcherRecord = button(@"Record", NSMakeRect(504, 194, 88, 32), self, @selector(record:));
-    switcherRecord.tag = 4;
-    [records addObject:switcherRecord];
-    [view addSubview:switcherRecord];
-    auto switcherReset = button(@"Reset", NSMakeRect(598, 194, 76, 32), self, @selector(clear:));
-    switcherReset.tag = 4;
-    [view addSubview:switcherReset];
+    for (size_t i = 0; i < switcher::shortcutActions.size(); ++i) {
+        const auto &action = switcher::shortcutActions[i];
+        addRow(action.label, action.defaultChord, 196 + extraHeight - i * 42);
+    }
     fields_ = fields;
     recordButtons_ = records;
     [view addSubview:label(@"Window scope", NSMakeRect(24, 157, 155, 24))];
@@ -172,8 +171,8 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
 - (void)loadConfig:(id)sender {
     [self endRecording];
     save_.enabled = NO;
-    exchange({"__settings-read"}, [self](Reply reply) {
-        if (reply.code || reply.values.size() != 11) {
+    exchange({"__settings-read-v2"}, [self](Reply reply) {
+        if (reply.code || reply.values.size() != 4) {
             message_.stringValue =
                 ns(reply.error.empty() ? "Cannot read resident settings." : reply.error);
             return;
@@ -186,16 +185,27 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
             ns(reply.values[3].empty()
                    ? "Record a shortcut, type a chord, or clear a binding to disable it."
                    : reply.values[3]);
-        for (NSUInteger i = 0; i < 4; ++i) {
-            fields_[i].stringValue = ns(reply.values[4 + i]);
+        Config config;
+        if (editable_) {
+            try {
+                config = parseConfig(original_);
+            } catch (const std::exception &e) {
+                editable_ = false;
+                message_.stringValue = ns(e.what());
+            }
+        }
+        for (size_t i = 0; i < workspaceRows; ++i)
+            fields_[i].stringValue = ns(config.shortcuts[i].text());
+        for (size_t i = 0; i < switcher::shortcutActions.size(); ++i)
+            fields_[workspaceRows + i].stringValue = ns(config.switcher.shortcuts[i].text());
+        for (NSUInteger i = 0; i < fields_.count; ++i) {
             fields_[i].enabled = editable_;
             recordButtons_[i].enabled = editable_;
         }
-        fields_[4].stringValue = ns(reply.values[10]);
-        fields_[4].enabled = recordButtons_[4].enabled = editable_;
         switcherEnabled_.state =
-            reply.values[8] == "true" ? NSControlStateValueOn : NSControlStateValueOff;
-        [switcherScope_ selectItemAtIndex:reply.values[9] == "all-desktops" ? 1 : 0];
+            config.switcher.enabled ? NSControlStateValueOn : NSControlStateValueOff;
+        [switcherScope_
+            selectItemAtIndex:config.switcher.scope == switcher::Scope::AllDesktops ? 1 : 0];
         switcherEnabled_.enabled = switcherScope_.enabled = editable_;
         save_.enabled = editable_;
     });
@@ -204,14 +214,25 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     if (!editable_)
         return;
     [self endRecording];
-    std::vector<std::string> args{"__settings-save", original_};
-    for (NSUInteger i = 0; i < 4; ++i)
-        args.emplace_back(fields_[i].stringValue.UTF8String);
-    args.emplace_back(switcherEnabled_.state == NSControlStateValueOn ? "true" : "false");
-    args.emplace_back(switcherScope_.indexOfSelectedItem == 1 ? "all-desktops" : "current-desktop");
-    args.emplace_back(fields_[4].stringValue.UTF8String);
+    std::string text;
+    try {
+        WorkspaceChords chords;
+        for (size_t i = 0; i < workspaceRows; ++i)
+            chords[i] = fields_[i].stringValue.UTF8String;
+        auto options = parseConfig(original_).switcher;
+        options.enabled = switcherEnabled_.state == NSControlStateValueOn;
+        options.scope = switcherScope_.indexOfSelectedItem == 1 ? switcher::Scope::AllDesktops
+                                                                : switcher::Scope::CurrentDesktop;
+        for (size_t i = 0; i < switcher::shortcutActions.size(); ++i)
+            options.shortcuts[i] =
+                switcher::parseShortcut(fields_[workspaceRows + i].stringValue.UTF8String);
+        text = editedConfig(original_, chords, options);
+    } catch (const std::exception &e) {
+        message_.stringValue = ns(e.what());
+        return;
+    }
     save_.enabled = NO;
-    exchange(std::move(args), [self](Reply reply) {
+    exchange({"__settings-save-v2", original_, text}, [self](Reply reply) {
         save_.enabled = editable_;
         if (reply.code) {
             message_.stringValue = ns(reply.error);
@@ -241,7 +262,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
             return;
         }
         token_ = reply.values[0];
-        message_.stringValue = recordingRow_ == 4
+        message_.stringValue = recordingRow_ >= static_cast<NSInteger>(workspaceRows)
                                    ? @"Press a modifier with Tab, Space, a letter, or another key. "
                                       "Escape cancels."
                                    : @"Press Control / Shift / Option / Command with ← or →. "
@@ -282,7 +303,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     }
     if (token_.empty())
         return YES;
-    if (recordingRow_ == 4) {
+    if (recordingRow_ >= static_cast<NSInteger>(workspaceRows)) {
         unsigned modifiers = 0;
         if (event.modifierFlags & NSEventModifierFlagControl)
             modifiers |= switcher::Control;
@@ -341,7 +362,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     if (!editable_)
         return;
     [self endRecording];
-    fields_[sender.tag].stringValue = sender.tag == 4 ? @"option+tab" : @"";
+    fields_[sender.tag].stringValue = @"";
 }
 - (void)openConfig:(id)sender {
     if (!configPath_.empty())

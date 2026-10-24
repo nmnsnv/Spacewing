@@ -10,8 +10,9 @@ enum class Phase { Idle, Discovering, Picking, Activating };
 // The native service supplies snapshots and acknowledges the exact focused window.
 class Controller {
 public:
-    void accept(Intent intent);
-    void discovered(std::vector<Candidate> windows, std::optional<WindowID> focused);
+    void accept(Intent intent, Mode mode = Mode::AllWindows);
+    void discovered(std::vector<Candidate> windows, std::optional<WindowID> focused,
+                    int frontmost = 0);
     bool activated(WindowID focused);
     void cancel();
     Phase phase() const { return phase_; }
@@ -23,12 +24,18 @@ private:
     void advance(bool reuseCatalog = false);
     void open(std::vector<Candidate> windows, std::optional<WindowID> focused);
     void remember(WindowID focused);
+    struct Action {
+        Intent intent;
+        Mode mode;
+    };
     Session session_;
-    std::deque<Intent> pending_;
+    std::deque<Action> pending_;
     std::vector<WindowID> history_;
     std::vector<Candidate> catalog_;
     std::optional<WindowID> current_;
     std::optional<WindowID> target_;
+    int application_ = 0;
+    Mode mode_ = Mode::AllWindows;
     Phase phase_ = Phase::Idle;
 };
 } // namespace spacewing::switcher

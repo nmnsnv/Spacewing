@@ -64,8 +64,18 @@ void selection() {
 Input down(Key key, bool option = true, bool shift = false, bool repeat = false) {
     return {InputType::Down, key, (option ? Option : 0u) | (shift ? Shift : 0u), repeat};
 }
-void keyboard() {
+Keyboard configuredKeyboard(const Shortcuts &shortcuts = defaultShortcuts()) {
     Keyboard keyboard;
+    keyboard.configure(shortcuts);
+    return keyboard;
+}
+Shortcuts withPrimary(Shortcut shortcut) {
+    auto shortcuts = defaultShortcuts();
+    shortcuts[0] = shortcut;
+    return shortcuts;
+}
+void keyboard() {
+    auto keyboard = configuredKeyboard();
     auto result = keyboard.handle(down(Key::Tab, false), false);
     check(!result.consume && result.intent == Intent::None, "ordinary Tab passes through");
     result = keyboard.handle(down(Key::Tab), true);
@@ -130,7 +140,7 @@ void keyboard() {
           "sleep or tap reset clears held keys");
 }
 void arrows() {
-    Keyboard keyboard;
+    auto keyboard = configuredKeyboard();
     check(!keyboard.handle(down(Key::Up), false).consume &&
               !keyboard.handle(down(Key::Down), false).consume,
           "arrow keys pass through outside the picker");
@@ -176,13 +186,13 @@ void arrows() {
           "unowned arrow release passes through");
 }
 void shortcuts() {
-    check(parseShortcut(" ALT + tab ") == Shortcut{}, "default shortcut and alias");
+    check(parseShortcut(" ALT + tab ") == defaultShortcuts()[0], "default shortcut and alias");
     check(parseShortcut("Command + Control + Space").text() == "ctrl+cmd+space",
           "custom shortcut normalizes modifiers");
     check(parseShortcut("option+a").key == static_cast<Key>(0),
           "zero key code is a valid shortcut");
-    for (auto text : {"", "tab", "ctrl", "ctrl++tab", "ctrl+option+alt+tab", "ctrl+up",
-                      "option+down", "cmd+escape", "ctrl+tab+space", "ctrl+unknown"}) {
+    for (auto text : {"tab", "ctrl", "ctrl++tab", "ctrl+option+alt+tab", "ctrl+up", "option+down",
+                      "cmd+escape", "ctrl+tab+space", "ctrl+unknown"}) {
         bool rejected = false;
         try {
             parseShortcut(text);
@@ -191,9 +201,9 @@ void shortcuts() {
         }
         check(rejected, "invalid or reserved switcher shortcut rejected");
     }
-    Keyboard keyboard;
+    auto keyboard = configuredKeyboard();
     const auto shortcut = parseShortcut("ctrl+space");
-    keyboard.configure(shortcut);
+    keyboard.configure(withPrimary(shortcut));
     check(!keyboard.handle(down(Key::Tab), false).consume,
           "old shortcut passes through after reconfiguration");
     auto result = keyboard.handle({InputType::Down, shortcut.key, Control}, false);
@@ -210,18 +220,18 @@ void shortcuts() {
           "arrow navigation uses the configured modifier");
     check(keyboard.handle({InputType::Modifiers}, false).intent == Intent::Commit,
           "releasing configured modifier commits");
-    keyboard.configure(Shortcut{});
+    keyboard.configure(defaultShortcuts());
     check(keyboard.handle({InputType::Up, shortcut.key}, false).consume,
           "reconfiguration retains ownership of an old shortcut key-up");
     const auto multiple = parseShortcut("ctrl+option+a");
-    keyboard.configure(multiple);
+    keyboard.configure(withPrimary(multiple));
     result = keyboard.handle({InputType::Down, multiple.key, Control | Option}, false);
     check(result.consume && result.intent == Intent::Forward, "multiple modifiers and A open");
     check(keyboard.handle({InputType::Modifiers, Key::Other, Control}, false).intent ==
               Intent::Commit,
           "releasing any required modifier commits");
     keyboard.reset();
-    keyboard.configure(parseShortcut("shift+tab"));
+    keyboard.configure(withPrimary(parseShortcut("shift+tab")));
     result = keyboard.handle({InputType::Down, Key::Tab, Shift}, false);
     check(result.consume && result.intent == Intent::Forward,
           "Shift in the configured chord is not interpreted as reverse");
@@ -229,6 +239,192 @@ void shortcuts() {
 void quickTap(Controller &controller) {
     controller.accept(Intent::Forward);
     controller.accept(Intent::Commit);
+}
+void configuredBindings() {
+    Keyboard unconfigured;
+    for (unsigned key = 0; key < 128; ++key)
+        for (unsigned modifiers = 0; modifiers < 16; ++modifiers)
+            check(!unconfigured.handle({InputType::Down, static_cast<Key>(key), modifiers}, false)
+                       .consume,
+                  "an unconfigured keyboard never intercepts any chord");
+    unconfigured.configure({});
+    for (unsigned key = 0; key < 128; ++key)
+        for (unsigned modifiers = 0; modifiers < 16; ++modifiers)
+            check(!unconfigured.handle({InputType::Down, static_cast<Key>(key), modifiers}, false)
+                       .consume,
+                  "an empty configuration has no built-in fallback chords");
+    check(!parseShortcut("  ").enabled(), "empty switcher binding is disabled");
+    for (size_t i = 0; i < shortcutActions.size(); ++i) {
+        Shortcuts bindings{};
+        const auto custom = parseShortcut("ctrl+space");
+        bindings[i] = custom;
+        auto keyboard = configuredKeyboard(bindings);
+        for (const auto &original : defaultShortcuts())
+            check(!keyboard.handle({InputType::Down, original.key, original.modifiers}, false)
+                       .consume,
+                  "remapped bindings do not retain built-in fallback shortcuts");
+        auto result = keyboard.handle({InputType::Down, custom.key, custom.modifiers}, false);
+        check(result.consume && result.intent == Intent::Forward &&
+                  result.mode == shortcutActions[i].mode,
+              "every registered action dispatches from its configured chord");
+        keyboard.handle({InputType::Up, custom.key}, false);
+        result = keyboard.handle({InputType::Down, custom.key, custom.modifiers | Shift}, false);
+        check(result.intent == Intent::Backward && result.mode == shortcutActions[i].mode,
+              "every configured action supports its reverse chord");
+        check(keyboard.handle({InputType::Modifiers, Key::Other, Control}, false).intent ==
+                  Intent::None,
+              "releasing extra Shift retains the configured action");
+        result = keyboard.handle({InputType::Modifiers}, false);
+        check(result.intent == Intent::Commit && result.mode == shortcutActions[i].mode,
+              "every configured action commits on its own modifier release");
+        keyboard.configure({});
+        check(keyboard.handle({InputType::Up, custom.key}, false).consume,
+              "clearing configuration retains ownership of a swallowed key-up");
+        check(!keyboard.handle({InputType::Down, custom.key, custom.modifiers}, false).consume,
+              "clearing an action removes its configured binding");
+    }
+    for (const auto chord : {"option+tab", "option+shift+tab"}) {
+        auto bindings = defaultShortcuts();
+        bindings[1] = parseShortcut(chord);
+        auto keyboard = configuredKeyboard();
+        bool rejected = false;
+        try {
+            keyboard.configure(bindings);
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+        check(rejected, "overlapping forward or reverse bindings are rejected");
+        check(keyboard.handle(down(Key::Grave), false).mode == Mode::ApplicationWindows,
+              "invalid reconfiguration preserves the previous valid bindings");
+    }
+}
+void applicationKeyboard() {
+    auto keyboard = configuredKeyboard();
+    check(!keyboard.handle(down(Key::Grave, false), false).consume,
+          "ordinary backtick passes through");
+    check(!keyboard.handle({InputType::Down, Key::Grave, CommandKey}, false).consume,
+          "native Command+backtick passes through");
+    check(!keyboard.handle({InputType::Down, Key::Grave, Option | Control}, false).consume,
+          "unrelated modified backtick passes through");
+    check(!keyboard.handle(down(Key::Grave), true).consume && !keyboard.active(),
+          "busy host preserves Option+backtick");
+    check(!keyboard.handle(down(Key::Grave, true, false, true), false).consume,
+          "held backtick cannot open a picker");
+    auto result = keyboard.handle(down(Key::Grave), false);
+    check(result.consume && result.intent == Intent::Forward &&
+              result.mode == Mode::ApplicationWindows && keyboard.active(),
+          "Option+backtick opens the application picker");
+    check(keyboard.handle(down(Key::Grave, true, false, true), false).intent == Intent::None,
+          "held backtick does not cycle");
+    check(keyboard.handle({InputType::Up, Key::Grave}, false).consume && keyboard.active(),
+          "backtick release is paired and keeps the picker open");
+    result = keyboard.handle(down(Key::Grave, true, true), false);
+    check(result.consume && result.intent == Intent::Backward &&
+              result.mode == Mode::ApplicationWindows,
+          "Shift+Option+backtick reverses within the application");
+    check(keyboard.handle({InputType::Modifiers, Key::Other, Option}, false).intent == Intent::None,
+          "releasing extra Shift keeps the application picker open");
+    result = keyboard.handle(down(Key::Up), false);
+    check(result.intent == Intent::Backward && result.mode == Mode::ApplicationWindows,
+          "arrow navigation retains the application filter");
+    result = keyboard.handle({InputType::Modifiers}, false);
+    check(result.intent == Intent::Commit && result.mode == Mode::ApplicationWindows &&
+              !keyboard.active(),
+          "Option release commits the application picker");
+    check(keyboard.handle(down(Key::Grave, false, false, true), true).consume &&
+              keyboard.handle({InputType::Up, Key::Grave}, false).consume,
+          "backtick repeats and key-up stay paired after modifier release");
+    keyboard.reset();
+    keyboard.handle(down(Key::Grave), false);
+    result = keyboard.handle(down(Key::Escape), false);
+    check(result.consume && result.intent == Intent::Cancel && !keyboard.active(),
+          "Escape cancels the application picker");
+    check(keyboard.handle({InputType::Modifiers}, false).intent == Intent::None,
+          "release after cancelling the application picker does not commit");
+    keyboard.reset();
+    keyboard.configure(withPrimary(parseShortcut("ctrl+space")));
+    result = keyboard.handle(down(Key::Grave), false);
+    check(result.mode == Mode::ApplicationWindows && keyboard.active(),
+          "application shortcut remains available with a custom main shortcut");
+    check(keyboard.handle({InputType::Modifiers, Key::Other, Option}, false).intent == Intent::None,
+          "application picker uses Option even when the main shortcut uses Control");
+    check(keyboard.handle({InputType::Modifiers}, false).intent == Intent::Commit,
+          "application picker commits on Option release with a custom main shortcut");
+    keyboard.reset();
+    auto remapped = defaultShortcuts();
+    std::swap(remapped[0], remapped[1]);
+    keyboard.configure(remapped);
+    result = keyboard.handle(down(Key::Grave), false);
+    check(result.mode == Mode::AllWindows && result.intent == Intent::Forward,
+          "swapping configured shortcuts changes their actions without fixed-key fallbacks");
+}
+void applicationSwitching() {
+    auto keyboard = configuredKeyboard();
+    Controller controller;
+    const auto send = [&](Input input) {
+        const auto decision = keyboard.handle(input, false);
+        controller.accept(decision.intent, decision.mode);
+    };
+    send(down(Key::Grave));
+    controller.discovered({windows[0], windows[2], windows[1]}, a);
+    check(controller.session().windows().size() == 2 && controller.session().windows()[0].id == a &&
+              controller.session().windows()[1].id == b && controller.session().selected() == 1,
+          "application picker skips another app even when it is next in window order");
+    send({InputType::Up, Key::Grave});
+    send(down(Key::Grave));
+    check(controller.session().selected() == 0, "application cycling wraps within the app");
+    send({InputType::Up, Key::Grave});
+    send(down(Key::Grave, true, true));
+    check(controller.session().selected() == 1, "application reverse cycling wraps within the app");
+    send({InputType::Up, Key::Grave});
+    send(down(Key::Tab));
+    check(controller.session().windows().size() == 3 && controller.session().windows()[1].id == c,
+          "Option+Tab restores all windows during the same modifier hold");
+    send({InputType::Up, Key::Tab});
+    send(down(Key::Grave));
+    send({InputType::Modifiers});
+    check(controller.target() == b, "returning to Option+backtick selects only this app");
+    send({InputType::Up, Key::Grave});
+    // Queue both modes while the first native activation is still pending.
+    send(down(Key::Tab));
+    send({InputType::Up, Key::Tab});
+    send(down(Key::Tab));
+    send({InputType::Up, Key::Tab});
+    send({InputType::Modifiers});
+    send(down(Key::Grave));
+    send({InputType::Up, Key::Grave});
+    send({InputType::Modifiers});
+    check(controller.activated(b) && controller.target() == c,
+          "queued all-window gesture restores the full catalog after an application gesture");
+    check(controller.activated(c) && controller.target() == c,
+          "queued application gesture uses the newly activated app and handles its single window");
+    check(controller.activated(c) && controller.phase() == Phase::Idle,
+          "mixed queued gestures finish exactly once");
+    for (int i = 0; i < 4; ++i) {
+        send(down(Key::Grave));
+        send({InputType::Modifiers});
+        send({InputType::Up, Key::Grave});
+    }
+    controller.discovered({windows[2], windows[0], windows[1]}, a);
+    for (const auto expected : {b, a, b, a}) {
+        check(
+            controller.target() == expected && controller.activated(expected),
+            "quick application gestures queued during discovery alternate only that app's windows");
+    }
+    check(controller.phase() == Phase::Idle, "rapid application gestures drain the queue");
+    controller.accept(Intent::Forward, Mode::ApplicationWindows);
+    controller.discovered(windows, std::nullopt, a.pid);
+    check(controller.session().windows().size() == 2,
+          "known frontmost app still filters when its focused AX window is unavailable");
+    controller.cancel();
+    controller.accept(Intent::Forward, Mode::ApplicationWindows);
+    controller.discovered(windows, std::nullopt);
+    check(controller.phase() == Phase::Idle,
+          "unknown frontmost app cannot fall back to switching another app");
+    controller.accept(Intent::Forward, Mode::ApplicationWindows);
+    controller.discovered({windows[2]}, a);
+    check(controller.phase() == Phase::Idle && !controller.target(),
+          "no eligible windows in the current app closes without activating another app");
 }
 void rapidSwitching() {
     Controller controller;
@@ -352,6 +548,9 @@ int main() {
         keyboard();
         arrows();
         shortcuts();
+        configuredBindings();
+        applicationKeyboard();
+        applicationSwitching();
         rapidSwitching();
         historyAndCancellation();
         std::cout << checks << " switcher checks passed\n";

@@ -9,4 +9,5 @@ drag_right = "ctrl+shift+cmd+right"
 [switcher]
 enabled = true
 shortcut = "option+tab"
+application_shortcut = "option+grave"
 scope = "current-desktop" # Or "all-desktops".

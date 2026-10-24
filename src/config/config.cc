@@ -26,16 +26,15 @@ auto document(const std::string &text) {
 } // namespace
 
 std::string defaultConfig() {
-    return "# Spacewing: native macOS Spaces. Empty strings disable shortcuts.\n"
-           "[shortcuts]\n"
-           "left = \"ctrl+shift+option+left\"\n"
-           "right = \"ctrl+shift+option+right\"\n"
-           "drag_left = \"ctrl+shift+cmd+left\"\n"
-           "drag_right = \"ctrl+shift+cmd+right\"\n"
-           "\n[switcher]\n"
-           "enabled = true\n"
-           "shortcut = \"option+tab\"\n"
-           "scope = \"current-desktop\"\n";
+    std::ostringstream text;
+    text << "# Spacewing: native macOS Spaces. Empty strings disable shortcuts.\n[shortcuts]\n";
+    for (const auto &action : actionDefinitions)
+        text << action.setting << " = \"" << action.defaultChord << "\"\n";
+    text << "\n[switcher]\nenabled = true\n";
+    for (const auto &action : switcher::shortcutActions)
+        text << action.setting << " = \"" << action.defaultChord << "\"\n";
+    text << "scope = \"current-desktop\"\n";
+    return text.str();
 }
 
 Config parseConfig(const std::string &text) {
@@ -58,18 +57,22 @@ Config parseConfig(const std::string &text) {
         if (!settings.is_table())
             throw Error("[switcher] must be a table", 78);
         for (const auto &[key, value] : settings.as_table()) {
-            if (key == "enabled") {
-                if (!value.is_boolean())
-                    throw Error("switcher.enabled must be a boolean", 78);
-                config.switcher.enabled = value.as_boolean();
-            } else if (key == "shortcut") {
+            const auto action =
+                std::find_if(switcher::shortcutActions.begin(), switcher::shortcutActions.end(),
+                             [&](const auto &item) { return key == item.setting; });
+            if (action != switcher::shortcutActions.end()) {
                 if (!value.is_string())
-                    throw Error("switcher.shortcut must be a string", 78);
+                    throw Error("switcher." + key + " must be a string", 78);
                 try {
-                    config.switcher.shortcut = switcher::parseShortcut(value.as_string());
+                    config.switcher.shortcuts[action - switcher::shortcutActions.begin()] =
+                        switcher::parseShortcut(value.as_string());
                 } catch (const std::invalid_argument &e) {
                     throw Error(e.what(), 78);
                 }
+            } else if (key == "enabled") {
+                if (!value.is_boolean())
+                    throw Error("switcher.enabled must be a boolean", 78);
+                config.switcher.enabled = value.as_boolean();
             } else if (key == "scope") {
                 if (!value.is_string() ||
                     (value.as_string() != "current-desktop" && value.as_string() != "all-desktops"))
@@ -82,6 +85,11 @@ Config parseConfig(const std::string &text) {
             }
         }
     }
+    try {
+        switcher::validateShortcuts(config.switcher.shortcuts);
+    } catch (const std::invalid_argument &e) {
+        throw Error(e.what(), 78);
+    }
     std::set<Shortcut> used;
     for (size_t i = 0; i < actionNames.size(); ++i) {
         auto it = table.find(actionNames[i]);
@@ -91,19 +99,18 @@ Config parseConfig(const std::string &text) {
         if (config.shortcuts[i].enabled() && !used.insert(config.shortcuts[i]).second)
             throw Error("Duplicate shortcut: " + config.shortcuts[i].text(), 78);
         const auto &shortcut = config.shortcuts[i];
-        if (config.switcher.enabled && shortcut.enabled() &&
-            shortcut.key == static_cast<unsigned>(config.switcher.shortcut.key) &&
-            (shortcut.modifiers & ~unsigned(Shift)) ==
-                (config.switcher.shortcut.modifiers & ~unsigned(Shift)) &&
-            (shortcut.modifiers & config.switcher.shortcut.modifiers) ==
-                config.switcher.shortcut.modifiers)
-            throw Error(
-                "Window switcher shortcut conflicts with desktop shortcut: " + shortcut.text(), 78);
+        if (config.switcher.enabled && shortcut.enabled())
+            for (const auto &binding : config.switcher.shortcuts)
+                if (switcher::matchesShortcut(binding, static_cast<switcher::Key>(shortcut.key),
+                                              shortcut.modifiers))
+                    throw Error("Window switcher shortcut conflicts with desktop shortcut: " +
+                                    shortcut.text(),
+                                78);
     }
     return config;
 }
 
-std::string editedConfig(const std::string &original, const std::array<std::string, 4> &chords,
+std::string editedConfig(const std::string &original, const WorkspaceChords &chords,
                          std::optional<switcher::Options> switcher) {
     parseConfig(original);
     auto root = document(original);
@@ -129,11 +136,14 @@ std::string editedConfig(const std::string &original, const std::array<std::stri
             settings.at("scope").as_string() = scope;
         else
             settings["scope"] = scope;
-        const auto shortcut = switcher->shortcut.text();
-        if (settings.contains("shortcut"))
-            settings.at("shortcut").as_string() = shortcut;
-        else
-            settings["shortcut"] = shortcut;
+        for (size_t i = 0; i < switcher::shortcutActions.size(); ++i) {
+            const auto key = switcher::shortcutActions[i].setting;
+            const auto chord = switcher->shortcuts[i].text();
+            if (settings.contains(key))
+                settings.at(key).as_string() = chord;
+            else
+                settings[key] = chord;
+        }
     }
     auto result = toml::format(root);
     parseConfig(result);

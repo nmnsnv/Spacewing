@@ -50,8 +50,9 @@ Decision Keyboard::handle(Input event, bool blocked) {
     // A swallowed key-down owns its repeats even after modifier release/cancel.
     if (ownedRepeat && (!active_ || (event.key != Key::Up && event.key != Key::Down)))
         return {true, Intent::None};
-    const bool heldModifiers = (event.modifiers & shortcut_.modifiers) == shortcut_.modifiers;
-    const bool extraModifier = (event.modifiers & ~(shortcut_.modifiers | Shift)) != 0;
+    const bool heldModifiers =
+        (event.modifiers & activeShortcut_.modifiers) == activeShortcut_.modifiers;
+    const bool extraModifier = (event.modifiers & ~(activeShortcut_.modifiers | Shift)) != 0;
     if (event.type == InputType::Modifiers) {
         if (active_ && extraModifier) {
             active_ = false;
@@ -59,7 +60,7 @@ Decision Keyboard::handle(Input event, bool blocked) {
         }
         if (active_ && !heldModifiers) {
             active_ = false;
-            return {false, Intent::Commit};
+            return {false, Intent::Commit, mode_};
         }
         return {};
     }
@@ -71,16 +72,21 @@ Decision Keyboard::handle(Input event, bool blocked) {
     if (active_ && heldModifiers && !extraModifier &&
         (event.key == Key::Up || event.key == Key::Down) && (!event.repeat || owned)) {
         held_[code] = true;
-        return {true, event.key == Key::Up ? Intent::Backward : Intent::Forward};
+        return {true, event.key == Key::Up ? Intent::Backward : Intent::Forward, mode_};
     }
-    if (event.key == shortcut_.key && heldModifiers && !extraModifier && !blocked) {
+    for (size_t i = 0; i < shortcuts_.size(); ++i) {
+        if (blocked || !matchesShortcut(shortcuts_[i], event.key, event.modifiers))
+            continue;
         if (event.repeat)
             return {owned, Intent::None};
         held_[code] = true;
         active_ = true;
-        return {true, (event.modifiers & Shift) && !(shortcut_.modifiers & Shift)
-                          ? Intent::Backward
-                          : Intent::Forward};
+        activeShortcut_ = shortcuts_[i];
+        mode_ = shortcutActions[i].mode;
+        return {true,
+                (event.modifiers & Shift) && !(activeShortcut_.modifiers & Shift) ? Intent::Backward
+                                                                                  : Intent::Forward,
+                mode_};
     }
     if (active_) {
         active_ = false;
@@ -88,8 +94,9 @@ Decision Keyboard::handle(Input event, bool blocked) {
     }
     return {};
 }
-void Keyboard::configure(Shortcut shortcut) {
-    shortcut_ = parseShortcut(shortcut.text());
+void Keyboard::configure(const Shortcuts &shortcuts) {
+    validateShortcuts(shortcuts);
+    shortcuts_ = shortcuts;
     cancel();
 }
 void Keyboard::reset() {

@@ -64,6 +64,15 @@ void arguments() {
 }
 void configuration() {
     const auto defaults = parseConfig(defaultConfig());
+    const auto packagedText = readFile(
+        (std::filesystem::path(__FILE__).parent_path().parent_path() / "resources/default.toml")
+            .string());
+    const auto packaged = parseConfig(packagedText);
+    check(packaged.shortcuts == defaults.shortcuts && packaged.switcher == defaults.switcher,
+          "packaged default configuration matches the registered action defaults");
+    for (const auto &action : switcher::shortcutActions)
+        check(packagedText.find(std::string("\n") + action.setting + " =") != std::string::npos,
+              "every registered switcher binding is visible in the packaged config");
     check(defaults.shortcuts[0].text() == "ctrl+shift+option+left", "switch default");
     check(defaults.shortcuts[3].text() == "ctrl+shift+cmd+right", "carry default");
     check(parseShortcut(" SHIFT + CONTROL + ALT + left ") == defaults.shortcuts[0],
@@ -92,7 +101,8 @@ void configuration() {
     check(!parseConfig(edited).shortcuts[1].enabled(), "GUI clear");
     check(defaults.switcher.enabled && defaults.switcher.scope == switcher::Scope::CurrentDesktop,
           "switcher defaults to current desktop");
-    check(defaults.switcher.shortcut.text() == "option+tab", "switcher default shortcut");
+    check(defaults.switcher.shortcuts[0].text() == "option+tab", "switcher default shortcut");
+    check(defaults.switcher.shortcuts[1].text() == "option+grave", "current-app shortcut default");
     check(partial.switcher == switcher::Options{}, "legacy configs inherit switcher defaults");
     auto all = parseConfig("[shortcuts]\n[switcher]\nenabled=false\nscope='all-desktops'\n");
     check(!all.switcher.enabled && all.switcher.scope == switcher::Scope::AllDesktops,
@@ -100,8 +110,7 @@ void configuration() {
     for (auto value :
          {"switcher=true\n[shortcuts]", "[shortcuts]\n[switcher]\nenabled='yes'",
           "[shortcuts]\n[switcher]\nscope='all'", "[shortcuts]\n[switcher]\nscope=1",
-          "[shortcuts]\n[switcher]\nshortcut=1", "[shortcuts]\n[switcher]\nshortcut=''",
-          "[shortcuts]\n[switcher]\nshortcut='tab'",
+          "[shortcuts]\n[switcher]\nshortcut=1", "[shortcuts]\n[switcher]\nshortcut='tab'",
           "[shortcuts]\n[switcher]\nshortcut='option+up'",
           "[shortcuts]\n[switcher]\nshortcut='option+escape'",
           "[shortcuts]\n[switcher]\nunknown=true"})
@@ -119,7 +128,7 @@ void configuration() {
           "settings save adds switcher table to legacy config");
     const auto customSource = source + "\n[switcher]\nshortcut='CONTROL+Space' # Keep chord note\n";
     const auto custom = parseConfig(customSource);
-    check(custom.switcher.shortcut.text() == "ctrl+space", "custom switcher shortcut parsed");
+    check(custom.switcher.shortcuts[0].text() == "ctrl+space", "custom switcher shortcut parsed");
     check(parseConfig(editedConfig(customSource, values)).switcher == custom.switcher,
           "desktop-only saves preserve custom switcher shortcut");
     const auto changed = editedConfig(customSource, values, defaults.switcher);
@@ -139,6 +148,47 @@ void configuration() {
                        "shortcut='ctrl+left'\n")
                .switcher.enabled,
           "disabled switcher does not reserve its shortcut");
+    for (size_t i = 0; i < switcher::shortcutActions.size(); ++i) {
+        const std::string setting = switcher::shortcutActions[i].setting;
+        const auto customized =
+            source + "\n[switcher]\n" + setting + "='CONTROL+Space' # Keep action note\n";
+        const auto config = parseConfig(customized);
+        check(config.switcher.shortcuts[i].text() == "ctrl+space",
+              "every switcher action can be configured by its registered name");
+        check(parseConfig(editedConfig(customized, values)).switcher == config.switcher,
+              "desktop-only Settings edits preserve every switcher action");
+        auto options = config.switcher;
+        options.shortcuts[i] = switcher::parseShortcut("cmd+return");
+        const auto saved = editedConfig(customized, values, options);
+        check(parseConfig(saved).switcher == options &&
+                  saved.find("Keep action note") != std::string::npos,
+              "Settings round-trip every action and retain comments");
+        options.shortcuts[i] = {};
+        check(!parseConfig(editedConfig(saved, values, options)).switcher.shortcuts[i].enabled(),
+              "Settings can clear every switcher action");
+        for (const auto invalid : {"1", "'tab'", "'ctrl+up'", "'cmd+escape'"})
+            rejects([&] { parseConfig(source + "\n[switcher]\n" + setting + "=" + invalid); }, 78,
+                    "every action uses the same shortcut validation");
+        for (const auto chord : {"ctrl+left", "ctrl+shift+left"})
+            rejects(
+                [&] {
+                    parseConfig(std::string("[shortcuts]\nleft='") + chord + "'\n[switcher]\n" +
+                                setting + "='ctrl+left'\n");
+                },
+                78, "every action checks desktop conflicts including reverse chords");
+    }
+    for (const auto chord : {"option+tab", "option+shift+tab"})
+        rejects(
+            [&] {
+                parseConfig(std::string("[shortcuts]\n[switcher]\napplication_shortcut='") + chord +
+                            "'\n");
+            },
+            78, "switcher actions cannot share forward or reverse chords");
+    auto noBindings =
+        parseConfig("[shortcuts]\n[switcher]\nshortcut=''\napplication_shortcut=''\n");
+    check(std::none_of(noBindings.switcher.shortcuts.begin(), noBindings.switcher.shortcuts.end(),
+                       [](const auto &binding) { return binding.enabled(); }),
+          "configuration can disable all switcher bindings");
     Temporary temporary;
     const auto path = temporary.path + "/config";
     PendingSave first(path, source);

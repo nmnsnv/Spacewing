@@ -14,7 +14,7 @@ enum class Scope { CurrentDesktop, AllDesktops };
 struct Options {
     bool enabled = true;
     Scope scope = Scope::CurrentDesktop;
-    Shortcut shortcut{};
+    Shortcuts shortcuts = defaultShortcuts();
     auto operator<=>(const Options &) const = default;
 };
 struct WindowID {
@@ -55,19 +55,23 @@ struct Input {
 struct Decision {
     bool consume = false;
     Intent intent = Intent::None;
+    Mode mode = Mode::AllWindows;
 };
 // Runs synchronously in the event tap; native work runs outside the callback.
 class Keyboard {
 public:
     Decision handle(Input event, bool blocked);
-    void configure(Shortcut shortcut);
+    void configure(const Shortcuts &shortcuts);
     void cancel() { active_ = false; }
     void reset();
     bool active() const { return active_; }
 
 private:
     bool active_ = false;
-    Shortcut shortcut_;
+    // No implicit bindings: only configure() can enable a shortcut.
+    Shortcuts shortcuts_{};
+    Shortcut activeShortcut_;
+    Mode mode_ = Mode::AllWindows;
     std::array<bool, 128> held_{};
 };
 } // namespace spacewing::switcher

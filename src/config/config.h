@@ -13,7 +13,8 @@ struct Config {
 };
 std::string defaultConfig();
 Config parseConfig(const std::string &text);
-std::string editedConfig(const std::string &original, const std::array<std::string, 4> &chords,
+using WorkspaceChords = std::array<std::string, workspace::actionDefinitions.size()>;
+std::string editedConfig(const std::string &original, const WorkspaceChords &chords,
                          std::optional<switcher::Options> switcher = std::nullopt);
 std::string readFile(const std::string &path);
 

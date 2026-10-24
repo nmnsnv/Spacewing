@@ -184,6 +184,7 @@ drag_right = "ctrl+shift+cmd+right"
 [switcher]
 enabled = true
 shortcut = "option+tab"
+application_shortcut = "option+grave"
 scope = "current-desktop" # Or "all-desktops".
 ~~~
 
@@ -221,19 +222,29 @@ press **Escape** to close without activating it. Held arrows repeat; a held shor
 key does not repeat. The overlay shows app icons and window titles without taking
 keyboard focus. Other typing cancels the picker and passes through to the focused app.
 
+Hold **Option** and press **backtick** (the grave key) to switch only between windows
+of the current app. Press backtick again to advance, add **Shift** to reverse, and
+release Option to activate. Up/Down and Escape work as above. Option+Tab and
+Option+backtick can change the window list while Option remains held. Both use the
+configured desktop scope. Command+backtick continues to use macOS's native behavior.
+
 The default scope is the currently active native desktop. Change **Window scope**
 in Settings, or set **switcher.scope** to **"all-desktops"** in the config file.
 Set **switcher.enabled = false** to disable the feature. Switcher settings reload live;
 an omitted switcher table uses the defaults above, and invalid edits preserve the
-last valid configuration. Change **Switcher shortcut** in Settings by recording or
-typing a chord, or set **switcher.shortcut**, for example **"ctrl+space"**. Use at
+last valid configuration. Change **All windows shortcut** or **Current app shortcut**
+in Settings by recording or typing a chord, or set **switcher.shortcut** and
+**switcher.application_shortcut** in the config file, for example **"ctrl+space"**. Use at
 least one of Control, Shift, Option, or Command with Tab, Space, a letter, digit,
 Left/Right, F1–F12, Return, Delete, or a named punctuation key (for example
-**"option+grave"**). Key names follow physical macOS key positions. Up, Down, and
+**"ctrl+grave"**). Key names follow physical macOS key positions. Up, Down, and
 Escape are reserved for navigation and closing. Release any required modifier to
 activate the selection. Extra Shift reverses cycling unless it is part of the
-configured chord. The shortcut and its reverse chord cannot duplicate an enabled
-desktop shortcut. Omitted shortcut settings default to Option+Tab.
+configured chord. Neither shortcut nor its reverse chord may overlap the other
+switcher action or an enabled desktop shortcut. Omitted switcher shortcut settings
+use the defaults shown above. Clear a row in Settings or set its value to **""**
+to disable that binding. Changing a binding removes the old chord immediately;
+there are no fixed fallback shortcuts.
 
 This first version lists standard Accessibility windows and dialogs, excluding
 minimized windows, desktop elements, and Spacewing's own overlay. It starts from
@@ -312,6 +323,15 @@ cancellation notifications. Configuration crosses that boundary as an Options
 value. The current transport is in-process; a future separate process can supply
 an adapter without changing selection logic.
 
+Global shortcut dispatch is configuration-driven. Workspace action definitions in
+**packages/workspace/src/types.h** and switcher action definitions in
+**packages/switcher/src/shortcut.h** declare each setting, Settings label, and default
+chord. Configuration parsing, default generation, Settings rows, and serialization
+iterate those definitions; the switcher CLI and input dispatcher use the same schema.
+The keyboard handler starts with no bindings and receives only validated configuration.
+Settings exchanges complete TOML documents with the resident, preserving comments and
+checking for concurrent edits, so new actions need no extra positional IPC fields.
+
 CMake enforces the dependencies through **Spacewing::Workspace**,
 **Spacewing::Switcher**, and **Spacewing::SharedMacOS** targets. Portable types are
 available through **Spacewing::Shared**, **Spacewing::WorkspaceModel**, and
@@ -334,6 +354,7 @@ ctest --test-dir build-switcher --output-on-failure
 ./build-switcher/spacewing-switcher --all-desktops
 # Choose another shortcut in the standalone host.
 ./build-switcher/spacewing-switcher --shortcut ctrl+space
+./build-switcher/spacewing-switcher --application-shortcut cmd+grave
 ~~~
 
 The standalone workspace build produces its libraries and tests. The minimal
@@ -422,11 +443,14 @@ unavailable Accessibility focus, move/follow/focus failures, removal of source
 membership before following fullscreen moves, fullscreen window rejection, and
 the bounded action queue. Switcher tests cover
 active-window-first ordering, second-item selection,
-cycling, wrapping, arrow navigation, configurable shortcuts, commit/cancel, held keys,
+cycling, wrapping, arrow navigation, configurable shortcuts, current-app filtering,
+mixed-mode queued gestures, commit/cancel, held keys,
 modifier release order, host blocking, repeated two-window toggling despite reordered
 snapshots, queued gestures, exact focus acknowledgments, and cancellation/failure
-history retention. Configuration tests cover switcher defaults,
-scope and shortcut validation, chord conflicts, and settings/comment retention.
+history retention. Configuration tests cover every registered action's defaults,
+remapping, disabling, conflicts (including reverse chords), and Settings/comment
+retention. Exhaustive key/modifier checks ensure an unconfigured or cleared switcher
+cannot intercept hidden bindings.
 The IPC integration test uses temporary local sockets. Tests never post gestures
 or move windows.
 
@@ -464,6 +488,10 @@ The following checks cover live behavior beyond the automated suite:
    Repeatedly press and release Option+Tab; confirm it alternates the same two windows
    both within one app and across apps, including when a third window belongs to the
    app being activated. Hold Option and press Tab to confirm list cycling still works.
+   Use Option+backtick to cycle only the current app's windows; check Shift, arrows,
+   Escape, quick taps, and an app with only one eligible window. While holding Option,
+   alternate Tab and backtick and confirm the list changes between all apps and the
+   current app. Confirm Command+backtick still uses the native switcher.
 10. Test both scopes with multiple desktops, fullscreen apps, and separate displays.
     Change scope and enabled state through both Settings and the file, including
     while the picker is open. Record a desktop shortcut while Option+Tab is held.
