@@ -27,6 +27,7 @@ private:
     void execute(Command command, std::function<void(Reply)> completion);
     void hotkey(uint64_t id, bool pressed);
     void guardEmptyDesktop();
+    void updateDesktopNumber();
     void status();
     void configureSwitcher();
     bool recording();

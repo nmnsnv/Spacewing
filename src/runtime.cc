@@ -30,6 +30,7 @@ void Runtime::start() {
     });
     installHotkeys([this](uint64_t id, bool down) { hotkey(id, down); });
     setMenu(launchSettings, [this] { reload(); });
+    updateDesktopNumber();
     if (!explicitConfig_ && !std::filesystem::exists(path_)) {
         try {
             PendingSave save(path_, defaultConfig());
@@ -49,6 +50,7 @@ void Runtime::start() {
     watcher_ = watchConfig(path_, [this] { reload(); });
     observeWorkspace(
         [this] {
+            updateDesktopNumber();
             if (!switcher_->activating())
                 switcher_->cancel();
             guardEmptyDesktop();
@@ -57,11 +59,21 @@ void Runtime::start() {
             bindings_.resetPressed();
             recordingToken_.clear();
             reload();
-        });
+            updateDesktopNumber();
+        },
+        [this] { updateDesktopNumber(); });
     // Only the resident asks for access, once at startup. CLI clients and the
     // separate settings helper must not request their own Accessibility grants.
     if (!trusted())
         requestAccessibility();
+}
+void Runtime::updateDesktopNumber() {
+    try {
+        setDesktopNumber(snapshot().current + 1);
+    } catch (const std::exception &) {
+        // A transient topology failure must not leave a misleading desktop number.
+        setDesktopNumber(std::nullopt);
+    }
 }
 void Runtime::status() {
     std::string text = configError_.empty() ? operationError_ : configError_;
@@ -137,6 +149,7 @@ void Runtime::execute(Command command, std::function<void(Reply)> completion) {
                     landing_ = outcome.landed;
                 operationError_ = outcome.reply.error;
                 status();
+                updateDesktopNumber();
                 completion(outcome.reply);
                 if (outcome.landed)
                     guardEmptyDesktop();

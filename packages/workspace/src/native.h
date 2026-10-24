@@ -16,7 +16,8 @@ struct Snapshot {
     std::string summary() const;
 };
 Snapshot selectSnapshot(const std::vector<Snapshot> &displays, const std::string &requested);
-Snapshot snapshot(const std::string &display);
+// An empty display selects the display containing the globally active Space.
+Snapshot snapshot(const std::string &display = {});
 std::string cursorDisplay();
 CGPoint displayCenter(const std::string &display);
 std::vector<uint64_t> windowSpaces(uint32_t window);
@@ -44,7 +45,8 @@ void restoreFocus(const Window &window, bool forceRaise = false);
 bool canMoveWindows(bool fullscreenTarget = false);
 void submitWindowMove(uint32_t window, uint64_t space, bool fullscreenTarget = false);
 void activateEmptyDesktop(const std::string &display, uint64_t space);
-void observeWorkspace(const std::function<void()> &changed, const std::function<void()> &woke);
+void observeWorkspace(const std::function<void()> &changed, const std::function<void()> &woke,
+                      const std::function<void()> &displayChanged);
 
 class PointerRoute {
 public:

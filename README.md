@@ -25,7 +25,9 @@ entry points, configuration, IPC, Settings, and runtime wiring live under **src/
 Headers and implementations always live next to each other, including inside
 packages; there is no separate public **include/** tree.
 
-The app adds a **↔** menu-bar item with Settings, Accessibility, Window Preview Access,
+The app adds a **↔** menu-bar item with a small number for the current Space on the
+active display, starting at **1**. The number follows desktop switches made through
+Spacewing or macOS. Its menu contains Settings, Accessibility, Window Preview Access,
 Reload Config, status, and Quit. When Accessibility access is missing, startup requests the
 native macOS permission prompt. Use its **Open System Settings** button to grant
 **Spacewing.app** access, then quit and reopen the app. The **Accessibility…** menu

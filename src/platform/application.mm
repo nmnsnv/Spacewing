@@ -198,6 +198,24 @@ void setStatus(const std::string &status) {
     statusLine.title =
         [text length] > 100 ? [[text substringToIndex:100] stringByAppendingString:@"…"] : text;
 }
+void setDesktopNumber(std::optional<size_t> number) {
+    auto title = [[NSMutableAttributedString alloc]
+        initWithString:@"↔"
+            attributes:@{NSFontAttributeName : statusItem.button.font}];
+    if (number) {
+        auto badge = [[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"\u2009%zu", *number]
+                attributes:@{
+                    NSFontAttributeName :
+                        [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightSemibold],
+                    NSBaselineOffsetAttributeName : @3
+                }];
+        [title appendAttributedString:badge];
+    }
+    statusItem.button.attributedTitle = title;
+    statusItem.button.accessibilityLabel =
+        number ? [NSString stringWithFormat:@"Spacewing, Desktop %zu", *number] : @"Spacewing";
+}
 void launchSettings() {
     if (settingsTask.running) {
         [[NSRunningApplication

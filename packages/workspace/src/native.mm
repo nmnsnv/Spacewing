@@ -147,6 +147,13 @@ Snapshot snapshot(const std::string &display) {
         result.current = found - result.spaces.begin();
         displays.push_back(std::move(result));
     }
+    if (display.empty()) {
+        const auto activeID = active(connection());
+        for (const auto &candidate : displays)
+            if (candidate.id() == activeID)
+                return candidate;
+        throw Error("Active native Space is absent from topology", 75);
+    }
     return selectSnapshot(displays, display);
 }
 std::string cursorDisplay() {
@@ -335,9 +342,11 @@ void activateEmptyDesktop(const std::string &display, uint64_t space) {
     } catch (...) {
     }
 }
-void observeWorkspace(const std::function<void()> &changed, const std::function<void()> &woke) {
+void observeWorkspace(const std::function<void()> &changed, const std::function<void()> &woke,
+                      const std::function<void()> &displayChanged) {
     auto changedAction = changed;
     auto wokeAction = woke;
+    auto displayAction = displayChanged;
     auto center = NSWorkspace.sharedWorkspace.notificationCenter;
     [center addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
                         object:nil
@@ -345,6 +354,19 @@ void observeWorkspace(const std::function<void()> &changed, const std::function<
                     usingBlock:^(NSNotification *) {
                       changedAction();
                     }];
+    [center addObserverForName:NSWorkspaceDidActivateApplicationNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(NSNotification *) {
+                      displayAction();
+                    }];
+    [NSNotificationCenter.defaultCenter
+        addObserverForName:NSApplicationDidChangeScreenParametersNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *) {
+                  displayAction();
+                }];
     [center addObserverForName:NSWorkspaceDidWakeNotification
                         object:nil
                          queue:NSOperationQueue.mainQueue
