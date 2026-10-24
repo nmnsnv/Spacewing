@@ -11,10 +11,12 @@
 
 namespace spacewing::switcher {
 enum class Scope { CurrentDesktop, AllDesktops };
+enum class Layout { List, Grid };
 struct Options {
     bool enabled = true;
     Scope scope = Scope::CurrentDesktop;
     Shortcuts shortcuts = defaultShortcuts();
+    Layout layout = Layout::Grid;
     auto operator<=>(const Options &) const = default;
 };
 struct WindowID {
@@ -27,12 +29,14 @@ struct Candidate {
     std::string application;
     std::string title;
 };
+enum class Direction { Left, Right, Up, Down };
 
 // A frozen ordering for one modifier hold. No platform or desktop-manager objects.
 class Session {
 public:
     void begin(std::vector<Candidate> windows, std::optional<WindowID> focused);
     void step(bool reverse);
+    void move(Direction direction, size_t columns);
     void cancel();
     std::optional<WindowID> commit();
     const std::vector<Candidate> &windows() const { return windows_; }
@@ -45,7 +49,7 @@ private:
 };
 
 enum class InputType { Down, Up, Modifiers };
-enum class Intent { None, Forward, Backward, Commit, Cancel };
+enum class Intent { None, Forward, Backward, Left, Right, Up, Down, Commit, Cancel };
 struct Input {
     InputType type;
     Key key = Key::Other;
@@ -61,13 +65,14 @@ struct Decision {
 class Keyboard {
 public:
     Decision handle(Input event, bool blocked);
-    void configure(const Shortcuts &shortcuts);
+    void configure(const Shortcuts &shortcuts, Layout layout = Layout::Grid);
     void cancel() { active_ = false; }
     void reset();
     bool active() const { return active_; }
 
 private:
     bool active_ = false;
+    Layout layout_ = Layout::Grid;
     // No implicit bindings: only configure() can enable a shortcut.
     Shortcuts shortcuts_{};
     Shortcut activeShortcut_;

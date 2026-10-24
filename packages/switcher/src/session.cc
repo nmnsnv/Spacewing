@@ -21,6 +21,29 @@ void Session::step(bool reverse) {
     if (active())
         selected_ = (selected_ + (reverse ? windows_.size() - 1 : 1)) % windows_.size();
 }
+void Session::move(Direction direction, size_t columns) {
+    if (!active() || !columns)
+        return;
+    const auto column = selected_ % columns;
+    const auto rowStart = selected_ - column;
+    const auto rowCount = std::min(columns, windows_.size() - rowStart);
+    switch (direction) {
+    case Direction::Left:
+        selected_ = column ? selected_ - 1 : rowStart + rowCount - 1;
+        break;
+    case Direction::Right:
+        selected_ = column + 1 < rowCount ? selected_ + 1 : rowStart;
+        break;
+    case Direction::Up:
+        selected_ = selected_ >= columns
+                        ? selected_ - columns
+                        : column + (windows_.size() - 1 - column) / columns * columns;
+        break;
+    case Direction::Down:
+        selected_ = columns < windows_.size() - selected_ ? selected_ + columns : column;
+        break;
+    }
+}
 void Session::cancel() {
     windows_.clear();
     selected_ = 0;
@@ -48,7 +71,10 @@ Decision Keyboard::handle(Input event, bool blocked) {
         return {ownedRepeat, Intent::Cancel};
     }
     // A swallowed key-down owns its repeats even after modifier release/cancel.
-    if (ownedRepeat && (!active_ || (event.key != Key::Up && event.key != Key::Down)))
+    const bool arrow =
+        event.key == Key::Up || event.key == Key::Down ||
+        (layout_ == Layout::Grid && (event.key == Key::Left || event.key == Key::Right));
+    if (ownedRepeat && (!active_ || !arrow))
         return {true, Intent::None};
     const bool heldModifiers =
         (event.modifiers & activeShortcut_.modifiers) == activeShortcut_.modifiers;
@@ -69,11 +95,6 @@ Decision Keyboard::handle(Input event, bool blocked) {
         active_ = false;
         return {true, Intent::Cancel};
     }
-    if (active_ && heldModifiers && !extraModifier &&
-        (event.key == Key::Up || event.key == Key::Down) && (!event.repeat || owned)) {
-        held_[code] = true;
-        return {true, event.key == Key::Up ? Intent::Backward : Intent::Forward, mode_};
-    }
     for (size_t i = 0; i < shortcuts_.size(); ++i) {
         if (blocked || !matchesShortcut(shortcuts_[i], event.key, event.modifiers))
             continue;
@@ -88,15 +109,24 @@ Decision Keyboard::handle(Input event, bool blocked) {
                                                                                   : Intent::Forward,
                 mode_};
     }
+    if (active_ && heldModifiers && !extraModifier && arrow && (!event.repeat || owned)) {
+        held_[code] = true;
+        const auto intent = event.key == Key::Up     ? Intent::Up
+                            : event.key == Key::Down ? Intent::Down
+                            : event.key == Key::Left ? Intent::Left
+                                                     : Intent::Right;
+        return {true, intent, mode_};
+    }
     if (active_) {
         active_ = false;
         return {false, Intent::Cancel};
     }
     return {};
 }
-void Keyboard::configure(const Shortcuts &shortcuts) {
+void Keyboard::configure(const Shortcuts &shortcuts, Layout layout) {
     validateShortcuts(shortcuts);
     shortcuts_ = shortcuts;
+    layout_ = layout;
     cancel();
 }
 void Keyboard::reset() {

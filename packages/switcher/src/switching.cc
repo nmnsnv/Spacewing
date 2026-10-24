@@ -37,8 +37,17 @@ void Controller::advance(bool reuseCatalog) {
         } else if (mode != mode_) {
             mode_ = mode;
             open(catalog_, current_);
-        } else {
+        } else if (intent == Intent::Forward || intent == Intent::Backward) {
             session_.step(intent == Intent::Backward);
+        } else if (layout_ == Layout::List) {
+            if (intent == Intent::Up || intent == Intent::Down)
+                session_.step(intent == Intent::Up);
+        } else {
+            const auto direction = intent == Intent::Left    ? Direction::Left
+                                   : intent == Intent::Right ? Direction::Right
+                                   : intent == Intent::Up    ? Direction::Up
+                                                             : Direction::Down;
+            session_.move(direction, previewGrid(session_.windows().size(), area_).columns);
         }
     }
 }

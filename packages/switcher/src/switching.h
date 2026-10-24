@@ -1,5 +1,6 @@
 #pragma once
 
+#include "preview_layout.h"
 #include "session.h"
 #include <deque>
 
@@ -15,6 +16,8 @@ public:
                     int frontmost = 0);
     bool activated(WindowID focused);
     void cancel();
+    void setPreviewArea(PreviewArea area) { area_ = area; }
+    void setLayout(Layout layout) { layout_ = layout; }
     Phase phase() const { return phase_; }
     const Session &session() const { return session_; }
     std::optional<WindowID> focused() const { return current_; }
@@ -29,6 +32,8 @@ private:
         Mode mode;
     };
     Session session_;
+    PreviewArea area_;
+    Layout layout_ = Layout::Grid;
     std::deque<Action> pending_;
     std::vector<WindowID> history_;
     std::vector<Candidate> catalog_;

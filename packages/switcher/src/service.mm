@@ -1,6 +1,7 @@
 #include "service.h"
 #include "cf_ref.h"
 #include "macos.h"
+#include "overlay.h"
 #include "switching.h"
 #import <AppKit/AppKit.h>
 #include <ApplicationServices/ApplicationServices.h>
@@ -37,10 +38,6 @@ std::string string(CFTypeRef value) {
         return {};
     const char *text = [(__bridge NSString *)value UTF8String];
     return text ? text : "";
-}
-NSString *ns(const std::string &text) {
-    NSString *value = [NSString stringWithUTF8String:text.c_str()];
-    return value ? value : @"";
 }
 uint32_t windowNumber(AXUIElementRef element) {
     static auto get = symbol<AXError (*)(AXUIElementRef, uint32_t *)>("_AXUIElementGetWindow");
@@ -255,7 +252,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
     CFRunLoopSourceRef source = nullptr;
     dispatch_queue_t worker =
         dispatch_queue_create("dev.spacewing.switcher", DISPATCH_QUEUE_SERIAL);
-    NSPanel *panel = nil;
+    Overlay overlay;
     NSMutableArray *observers = [NSMutableArray new];
     uint64_t generation = 0;
     bool loading = false;
@@ -276,7 +273,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         loading = false;
         controller.cancel();
         keyboard.cancel(); // Keep swallowed key-downs paired with their key-ups.
-        [panel orderOut:nil];
+        overlay.hide();
     }
     void stop() {
         cancel();
@@ -295,8 +292,6 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
         for (id observer in observers)
             [center removeObserver:observer];
         [observers removeAllObjects];
-        [panel close];
-        panel = nil;
     }
     void start() {
         if (tap)
@@ -408,6 +403,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                 cancel();
                 return;
             }
+            controller.setPreviewArea(Overlay::availableArea());
             controller.accept(intent, mode);
             pump();
         } catch (const std::exception &e) {
@@ -436,7 +432,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
                 return;
             }
             finishing = false;
-            [panel orderOut:nil];
+            overlay.hide();
         } catch (const std::exception &e) {
             cancel();
             report(e.what());
@@ -483,7 +479,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
     }
     void commit() {
         const auto target = controller.target();
-        [panel orderOut:nil];
+        overlay.hide();
         if (!target) {
             finishing = false;
             return;
@@ -525,82 +521,7 @@ struct Service::Impl : std::enable_shared_from_this<Service::Impl> {
           }
         });
     }
-    void show() {
-        const auto &session = controller.session();
-        if (!session.active())
-            return;
-        if (!panel) {
-            panel = [[NSPanel alloc] initWithContentRect:NSZeroRect
-                                               styleMask:NSWindowStyleMaskBorderless |
-                                                         NSWindowStyleMaskNonactivatingPanel
-                                                 backing:NSBackingStoreBuffered
-                                                   defer:NO];
-            panel.releasedWhenClosed = NO;
-            panel.level = NSFloatingWindowLevel;
-            panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                       NSWindowCollectionBehaviorFullScreenAuxiliary;
-            panel.hidesOnDeactivate = NO;
-            panel.becomesKeyOnlyIfNeeded = YES;
-            panel.ignoresMouseEvents = YES;
-            panel.opaque = NO;
-            panel.backgroundColor = NSColor.clearColor;
-            panel.hasShadow = YES;
-        }
-        const auto &windows = session.windows();
-        const size_t count = std::min<size_t>(9, windows.size());
-        const size_t start =
-            std::min(session.selected() > 4 ? session.selected() - 4 : 0, windows.size() - count);
-        const CGFloat width = 600, height = 66 + count * 54;
-        auto view = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
-        view.material = NSVisualEffectMaterialHUDWindow;
-        view.state = NSVisualEffectStateActive;
-        view.wantsLayer = YES;
-        view.layer.cornerRadius = 16;
-        view.layer.masksToBounds = YES;
-        auto heading = [NSTextField
-            labelWithString:[NSString stringWithFormat:@"Switch windows    %zu / %zu",
-                                                       session.selected() + 1, windows.size()]];
-        heading.font = [NSFont boldSystemFontOfSize:15];
-        heading.frame = NSMakeRect(22, height - 35, width - 44, 22);
-        [view addSubview:heading];
-        for (size_t i = 0; i < count; ++i) {
-            const auto &window = windows[start + i];
-            const CGFloat y = height - 52 - (i + 1) * 54;
-            if (start + i == session.selected()) {
-                auto highlight = [[NSView alloc] initWithFrame:NSMakeRect(12, y, width - 24, 50)];
-                highlight.wantsLayer = YES;
-                highlight.layer.backgroundColor =
-                    [NSColor.controlAccentColor colorWithAlphaComponent:0.3].CGColor;
-                highlight.layer.cornerRadius = 8;
-                [view addSubview:highlight];
-            }
-            auto icon = [[NSImageView alloc] initWithFrame:NSMakeRect(24, y + 9, 32, 32)];
-            icon.image =
-                [NSRunningApplication runningApplicationWithProcessIdentifier:window.id.pid].icon;
-            [view addSubview:icon];
-            auto title = [NSTextField
-                labelWithString:ns(window.title.empty() ? window.application : window.title)];
-            title.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
-            title.lineBreakMode = NSLineBreakByTruncatingTail;
-            title.frame = NSMakeRect(70, y + 25, width - 96, 20);
-            [view addSubview:title];
-            auto name = [NSTextField labelWithString:ns(window.application)];
-            name.font = [NSFont systemFontOfSize:11];
-            name.textColor = NSColor.secondaryLabelColor;
-            name.frame = NSMakeRect(70, y + 7, width - 96, 17);
-            [view addSubview:name];
-        }
-        panel.contentView = view;
-        NSScreen *screen = NSScreen.mainScreen;
-        for (NSScreen *candidate in NSScreen.screens)
-            if (NSPointInRect(NSEvent.mouseLocation, candidate.frame))
-                screen = candidate;
-        const auto frame = screen.visibleFrame;
-        [panel setFrame:NSMakeRect(NSMidX(frame) - width / 2, NSMidY(frame) - height / 2, width,
-                                   height)
-                display:YES];
-        [panel orderFrontRegardless]; // Never makes the panel key or activates the resident.
-    }
+    void show() { overlay.show(controller.session(), options.layout); }
 };
 
 Service::Service(Host host) : impl_(std::make_shared<Impl>(std::move(host))) {}
@@ -614,7 +535,8 @@ void Service::configure(Options options) {
     else
         impl_->stop();
     impl_->cancel();
-    impl_->keyboard.configure(options.shortcuts);
+    impl_->keyboard.configure(options.shortcuts, options.layout);
+    impl_->controller.setLayout(options.layout);
     impl_->options = options;
 }
 void Service::cancel() { impl_->cancel(); }

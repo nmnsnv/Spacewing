@@ -12,13 +12,14 @@ if(APPLE)
         add_subdirectory(../shared "${CMAKE_CURRENT_BINARY_DIR}/shared")
     endif()
     enable_language(OBJCXX)
-    add_library(spacewing_switcher STATIC src/service.mm)
+    add_library(spacewing_switcher STATIC src/service.mm src/overlay.mm src/previews.mm)
     add_library(Spacewing::Switcher ALIAS spacewing_switcher)
     set_target_properties(spacewing_switcher PROPERTIES
         OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
     target_compile_options(spacewing_switcher PRIVATE -fobjc-arc -Wall -Wextra -Wpedantic)
     target_link_libraries(spacewing_switcher PUBLIC Spacewing::SwitcherModel
-        Spacewing::SharedMacOS)
+        Spacewing::SharedMacOS "-weak_framework ScreenCaptureKit"
+        "-framework CoreMedia" "-framework CoreVideo" "-framework CoreImage")
     if(PROJECT_IS_TOP_LEVEL)
         add_executable(spacewing-switcher src/main.mm)
         set_target_properties(spacewing-switcher PROPERTIES
@@ -35,4 +36,15 @@ if(BUILD_TESTING)
     add_executable(switcher_tests tests/session_tests.cc)
     target_link_libraries(switcher_tests PRIVATE Spacewing::SwitcherModel)
     add_test(NAME switcher COMMAND switcher_tests)
+    if(APPLE)
+        add_executable(switcher_preview_tests tests/preview_tests.mm)
+        set_target_properties(switcher_preview_tests PROPERTIES
+            OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+        target_compile_options(switcher_preview_tests PRIVATE -fobjc-arc -Wall -Wextra -Wpedantic)
+        target_link_libraries(switcher_preview_tests PRIVATE Spacewing::Switcher)
+        add_test(NAME switcher_preview_overlay COMMAND switcher_preview_tests)
+        add_test(NAME switcher_preview_capture COMMAND switcher_preview_tests --capture)
+        set_tests_properties(switcher_preview_overlay switcher_preview_capture PROPERTIES
+            SKIP_RETURN_CODE 77 TIMEOUT 20 RUN_SERIAL TRUE)
+    endif()
 endif()

@@ -1,4 +1,5 @@
 #include "session.h"
+#include "preview_layout.h"
 #include "switching.h"
 #include <iostream>
 #include <stdexcept>
@@ -14,6 +15,90 @@ void check(bool value, const char *message) {
 const WindowID a{10, 1}, b{10, 2}, c{20, 3};
 const std::vector<Candidate> windows{
     {a, "Editor", "First"}, {b, "Editor", "Second"}, {c, "Browser", "Page"}};
+void previewGridAndNavigation() {
+    check(previewGrid(0, {}).columns == 0, "empty sessions have no preview grid");
+    for (const PreviewArea area : {PreviewArea{1100, 700}, {760, 540}, {1440, 900}, {500, 320}}) {
+        for (size_t count = 1; count <= 100; ++count) {
+            const auto grid = previewGrid(count, area);
+            check(grid.columns > 0 && grid.columns <= count &&
+                      grid.rows == (count + grid.columns - 1) / grid.columns,
+                  "grid contains every window exactly once, including a partial final row");
+            check(grid.width <= area.width + 0.01 && grid.height <= area.height + 0.01 &&
+                      grid.tileWidth > 0 && grid.tileWidth <= 196 && grid.tileHeight <= 162,
+                  "compact previews fit all windows inside the available screen");
+            std::vector<Candidate> catalog;
+            for (size_t i = 0; i < count; ++i)
+                catalog.push_back({{10, static_cast<uint32_t>(i + 1)}, "Editor", "Window"});
+            Session session;
+            session.begin(catalog, std::nullopt);
+            for (size_t i = 0; i < count; ++i) {
+                const auto selected = session.selected();
+                for (auto direction : {Direction::Left, Direction::Right, Direction::Up, Direction::Down}) {
+                    Session moved = session;
+                    moved.move(direction, grid.columns);
+                    const auto target = moved.selected();
+                    check(target < count, "arrow movement never selects an empty cell");
+                    if (target != selected) {
+                        if (direction == Direction::Left || direction == Direction::Right)
+                            check(target / grid.columns == selected / grid.columns,
+                                  "horizontal arrows wrap within the same occupied row");
+                        else
+                            check(target % grid.columns == selected % grid.columns,
+                                  "vertical arrows wrap within the same occupied column");
+                    }
+                    const auto opposite = direction == Direction::Left ? Direction::Right
+                        : direction == Direction::Right ? Direction::Left
+                        : direction == Direction::Up ? Direction::Down : Direction::Up;
+                    moved.move(opposite, grid.columns);
+                    check(moved.selected() == selected,
+                          "opposite arrows return to the same cell, including wrap and partial rows");
+                }
+                session.step(false);
+            }
+        }
+    }
+    check(previewGrid(8, {1100, 700}).columns == 4, "compact default uses four columns");
+    std::vector<Candidate> catalog;
+    for (uint32_t i = 1; i <= 10; ++i)
+        catalog.push_back({{10, i}, "Editor", "Window"});
+    Controller controller;
+    controller.setPreviewArea({1100, 700});
+    controller.accept(Intent::Forward);
+    controller.accept(Intent::Down); // Queued before the catalog is available.
+    controller.discovered(catalog, catalog[0].id);
+    check(controller.session().selected() == 5, "queued Down moves one complete grid row");
+    controller.accept(Intent::Right);
+    check(controller.session().selected() == 6, "Right moves to the adjacent column");
+    controller.accept(Intent::Down);
+    check(controller.session().selected() == 2,
+          "Down wraps to the top when the final row has no cell in this column");
+    controller.accept(Intent::Left);
+    controller.accept(Intent::Up);
+    check(controller.session().selected() == 9, "Up from the top reaches the lowest occupied cell");
+    controller.accept(Intent::Down);
+    check(controller.session().selected() == 1, "Down from the lowest cell returns to the top");
+    controller.accept(Intent::Commit);
+    check(controller.target() == catalog[1].id, "release commits the exact spatial selection");
+    Session session;
+    session.begin(catalog, catalog[0].id);
+    session.move(Direction::Left, 4);
+    check(session.selected() == 0, "Left moves to the previous column");
+    session.move(Direction::Left, 4);
+    check(session.selected() == 3, "Left from the first column wraps to the row's last item");
+    session.move(Direction::Right, 4);
+    check(session.selected() == 0, "Right from the last column wraps to the row's first item");
+    session.move(Direction::Up, 4);
+    check(session.selected() == 8, "Up reaches the final partial row in the same column");
+    session.move(Direction::Left, 4);
+    check(session.selected() == 9, "horizontal wrap in a partial row skips missing cells");
+    session.move(Direction::Right, 4);
+    check(session.selected() == 8, "reverse horizontal wrap stays inside the partial row");
+    session.begin({catalog[0]}, catalog[0].id);
+    for (auto direction : {Direction::Left, Direction::Right, Direction::Up, Direction::Down}) {
+        session.move(direction, 4);
+        check(session.selected() == 0, "a single window wraps to itself in every direction");
+    }
+}
 void selection() {
     Session session;
     session.begin(windows, a);
@@ -73,6 +158,36 @@ Shortcuts withPrimary(Shortcut shortcut) {
     auto shortcuts = defaultShortcuts();
     shortcuts[0] = shortcut;
     return shortcuts;
+}
+void listLayout() {
+    Controller controller;
+    controller.setLayout(Layout::List);
+    controller.accept(Intent::Forward);
+    controller.accept(Intent::Down);
+    controller.discovered(windows, a);
+    check(controller.session().selected() == 2, "list Down advances one row during discovery");
+    controller.accept(Intent::Down);
+    check(controller.session().selected() == 0, "list Down wraps to the first row");
+    controller.accept(Intent::Up);
+    check(controller.session().selected() == 2, "list Up wraps to the last row");
+    controller.accept(Intent::Commit);
+    check(controller.target() == c, "list selection commits its exact window");
+
+    Keyboard keyboard;
+    keyboard.configure(defaultShortcuts(), Layout::List);
+    keyboard.handle(down(Key::Tab), false);
+    check(keyboard.handle(down(Key::Down), false).intent == Intent::Down,
+          "list retains Up/Down navigation");
+    auto result = keyboard.handle(down(Key::Right), false);
+    check(!result.consume && result.intent == Intent::Cancel,
+          "list retains the original pass-through behavior for horizontal arrows");
+    keyboard.configure(defaultShortcuts(), Layout::Grid);
+    keyboard.handle(down(Key::Tab), false);
+    check(keyboard.handle(down(Key::Right), false).intent == Intent::Right,
+          "changing to the grid enables horizontal navigation");
+    keyboard.configure(defaultShortcuts(), Layout::List);
+    check(keyboard.handle({InputType::Up, Key::Right}, false).consume,
+          "changing layouts preserves ownership of an already consumed arrow");
 }
 void keyboard() {
     auto keyboard = configuredKeyboard();
@@ -140,6 +255,31 @@ void keyboard() {
           "sleep or tap reset clears held keys");
 }
 void arrows() {
+    for (const auto [key, intent] : {std::pair{Key::Left, Intent::Left},
+                                     {Key::Right, Intent::Right}, {Key::Up, Intent::Up},
+                                     {Key::Down, Intent::Down}}) {
+        auto input = configuredKeyboard();
+        check(!input.handle(down(key), false).consume, "all arrows pass through outside the picker");
+        input.handle(down(Key::Tab), false);
+        auto result = input.handle(down(key), false);
+        check(result.consume && result.intent == intent, "each arrow dispatches its grid direction");
+        result = input.handle(down(key, true, false, true), false);
+        check(result.consume && result.intent == intent, "held arrows repeat spatial movement");
+        input.handle({InputType::Modifiers}, false);
+        check(input.handle(down(key, false, false, true), false).consume &&
+                  input.handle({InputType::Up, key}, false).consume,
+              "all arrow repeats and releases remain paired after commit");
+    }
+    {
+        auto input = configuredKeyboard(withPrimary(parseShortcut("ctrl+left")));
+        check(input.handle({InputType::Down, Key::Left, Control}, false).intent == Intent::Forward,
+              "existing arrow shortcut can still open the picker");
+        check(input.handle({InputType::Down, Key::Left, Control, true}, false).intent == Intent::None,
+              "a shortcut using an arrow retains shortcut repeat behavior");
+        input.handle({InputType::Up, Key::Left}, false);
+        check(input.handle({InputType::Down, Key::Left, Control}, false).intent == Intent::Forward,
+              "explicitly configured arrow chords take precedence over grid movement");
+    }
     auto keyboard = configuredKeyboard();
     check(!keyboard.handle(down(Key::Up), false).consume &&
               !keyboard.handle(down(Key::Down), false).consume,
@@ -147,12 +287,12 @@ void arrows() {
     keyboard.handle(down(Key::Tab), false);
     keyboard.handle({InputType::Up, Key::Tab}, false);
     auto result = keyboard.handle(down(Key::Up), false);
-    check(result.consume && result.intent == Intent::Backward, "Up moves selection up");
+    check(result.consume && result.intent == Intent::Up, "Up moves selection up");
     result = keyboard.handle(down(Key::Up, true, false, true), false);
-    check(result.consume && result.intent == Intent::Backward, "held Up continues navigating");
+    check(result.consume && result.intent == Intent::Up, "held Up continues navigating");
     check(keyboard.handle({InputType::Up, Key::Up}, false).consume, "Up release is paired");
     result = keyboard.handle(down(Key::Down), false);
-    check(result.consume && result.intent == Intent::Forward, "Down moves selection down");
+    check(result.consume && result.intent == Intent::Down, "Down moves selection down");
     result = keyboard.handle(down(Key::Escape), false);
     check(result.consume && result.intent == Intent::Cancel && !keyboard.active(),
           "Escape closes picker after arrow navigation");
@@ -216,7 +356,7 @@ void shortcuts() {
     check(keyboard.handle({InputType::Modifiers, Key::Other, Control}, false).intent ==
               Intent::None,
           "releasing extra Shift keeps the picker open");
-    check(keyboard.handle({InputType::Down, Key::Down, Control}, false).intent == Intent::Forward,
+    check(keyboard.handle({InputType::Down, Key::Down, Control}, false).intent == Intent::Down,
           "arrow navigation uses the configured modifier");
     check(keyboard.handle({InputType::Modifiers}, false).intent == Intent::Commit,
           "releasing configured modifier commits");
@@ -325,7 +465,7 @@ void applicationKeyboard() {
     check(keyboard.handle({InputType::Modifiers, Key::Other, Option}, false).intent == Intent::None,
           "releasing extra Shift keeps the application picker open");
     result = keyboard.handle(down(Key::Up), false);
-    check(result.intent == Intent::Backward && result.mode == Mode::ApplicationWindows,
+    check(result.intent == Intent::Up && result.mode == Mode::ApplicationWindows,
           "arrow navigation retains the application filter");
     result = keyboard.handle({InputType::Modifiers}, false);
     check(result.intent == Intent::Commit && result.mode == Mode::ApplicationWindows &&
@@ -544,6 +684,8 @@ void historyAndCancellation() {
 } // namespace
 int main() {
     try {
+        previewGridAndNavigation();
+        listLayout();
         selection();
         keyboard();
         arrows();

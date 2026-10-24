@@ -68,7 +68,7 @@ add_subdirectory(packages/switcher)
 # The host owns the combined app's CLI, config, IPC, menu and Settings plumbing.
 # Feature packages never include src/ or depend on this target.
 add_library(spacewing_host STATIC
-    src/command.cc src/executor.cc src/config/config.cc
+    src/command.cc src/executor.cc src/config/config.cc src/config/schema.cc
     src/ipc/socket.cc src/platform/application.mm)
 target_include_directories(spacewing_host PUBLIC src)
 target_include_directories(spacewing_host SYSTEM PRIVATE third_party/toml11)
@@ -85,10 +85,23 @@ target_compile_options(spacewing PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(spacewing PROPERTIES
     OUTPUT_NAME Spacewing RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+add_library(spacewing_settings_ui STATIC src/platform/settings_form.mm)
+target_compile_options(spacewing_settings_ui PRIVATE -fobjc-arc -Wall -Wextra -Wpedantic)
+target_link_libraries(spacewing_settings_ui PUBLIC spacewing_host)
+
 add_executable(spacewing-settings src/platform/settings.mm)
 target_compile_options(spacewing-settings PRIVATE -fobjc-arc -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(spacewing-settings PRIVATE spacewing_host)
+target_link_libraries(spacewing-settings PRIVATE spacewing_settings_ui)
 set_target_properties(spacewing-settings PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# The distributed file is generated from the same schema as the parser and Settings.
+add_executable(spacewing-config-defaults src/config/generate_defaults.cc)
+target_link_libraries(spacewing-config-defaults PRIVATE spacewing_host)
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/resources/default.toml"
+    COMMAND spacewing-config-defaults "${CMAKE_BINARY_DIR}/resources/default.toml"
+    DEPENDS spacewing-config-defaults
+    VERBATIM COMMENT "Generate default configuration from the settings schema")
+add_custom_target(config_defaults ALL DEPENDS "${CMAKE_BINARY_DIR}/resources/default.toml")
 
 # Publish a completely signed copy; the compiler's outputs are never the running app.
 add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/.bundle-stamp"
@@ -99,19 +112,28 @@ add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/.bundle-stamp"
         "Spacewing.app/Contents/MacOS/Spacewing" "${CMAKE_BINARY_DIR}/spacewing"
     COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/.bundle-stamp"
     DEPENDS spacewing spacewing-settings scripts/package.sh resources/Info.plist.in
-        resources/SettingsInfo.plist resources/default.toml THIRD_PARTY_NOTICES.md
+        resources/SettingsInfo.plist "${CMAKE_BINARY_DIR}/resources/default.toml" THIRD_PARTY_NOTICES.md
         "${CMAKE_BINARY_DIR}/resources/Info.plist" "${CMAKE_BINARY_DIR}/resources/SettingsInfo.plist"
         "${CMAKE_BINARY_DIR}/signing-config.txt"
     VERBATIM COMMENT "Package and sign Spacewing.app")
 add_custom_target(bundle ALL DEPENDS "${CMAKE_BINARY_DIR}/.bundle-stamp")
+add_dependencies(bundle config_defaults)
 
 if(BUILD_TESTING)
     add_executable(core_tests tests/core_tests.cc)
     target_link_libraries(core_tests PRIVATE spacewing_host)
+    target_compile_definitions(core_tests PRIVATE
+        SPACEWING_DEFAULT_CONFIG_PATH="${CMAKE_BINARY_DIR}/resources/default.toml")
+    add_dependencies(core_tests config_defaults)
     add_test(NAME core COMMAND core_tests)
     add_test(NAME ipc_integration COMMAND core_tests --ipc)
     # Restricted runners can prohibit local Unix-socket binds; other errors remain failures.
     set_tests_properties(ipc_integration PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME cli_help COMMAND spacewing --help)
     add_test(NAME cli_version COMMAND spacewing --version)
+    add_executable(settings_form_tests tests/settings_form_tests.mm)
+    target_compile_options(settings_form_tests PRIVATE -fobjc-arc -Wall -Wextra -Wpedantic)
+    target_link_libraries(settings_form_tests PRIVATE spacewing_settings_ui)
+    add_test(NAME settings_form COMMAND settings_form_tests)
+    set_tests_properties(settings_form PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20 RUN_SERIAL TRUE)
 endif()

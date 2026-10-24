@@ -13,6 +13,7 @@ struct Config {
 };
 std::string defaultConfig();
 Config parseConfig(const std::string &text);
+std::string editedConfig(const std::string &original, const Config &config);
 using WorkspaceChords = std::array<std::string, workspace::actionDefinitions.size()>;
 std::string editedConfig(const std::string &original, const WorkspaceChords &chords,
                          std::optional<switcher::Options> switcher = std::nullopt);

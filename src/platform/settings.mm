@@ -1,15 +1,16 @@
 #include "application.h"
 #include "config/config.h"
 #include "ipc/socket.h"
+#include "settings_form.h"
 #include "shortcut.h"
 #include "shortcuts.h"
 #import <AppKit/AppKit.h>
+#include <algorithm>
 #include <thread>
 
 using namespace spacewing;
 using namespace spacewing::workspace;
 namespace {
-constexpr auto workspaceRows = workspace::actionDefinitions.size();
 NSString *ns(const std::string &text) {
     return [NSString stringWithUTF8String:text.c_str()] ?: @"";
 }
@@ -43,11 +44,8 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
 
 @interface SettingsDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate> {
     NSWindow *window_;
-    NSArray<NSTextField *> *fields_;
-    NSArray<NSButton *> *recordButtons_;
+    std::unique_ptr<SettingsForm> form_;
     NSButton *save_;
-    NSButton *switcherEnabled_;
-    NSPopUpButton *switcherScope_;
     NSTextField *path_;
     NSTextField *message_;
     std::string original_;
@@ -75,8 +73,10 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
 @implementation SettingsDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     recordingRow_ = -1;
-    const CGFloat extraHeight = 42 * (switcher::shortcutActions.size() - 1);
-    const CGFloat height = 340 + 42 * (workspaceRows + switcher::shortcutActions.size());
+    form_ = std::make_unique<SettingsForm>(self, @selector(record:), @selector(clear:));
+    form_->load(Config{}, false);
+    const CGFloat height = std::min(form_->view().frame.size.height + 154,
+                                    NSScreen.mainScreen.visibleFrame.size.height - 60);
     window_ =
         [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, height)
                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -87,49 +87,12 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     window_.delegate = self;
     window_.releasedWhenClosed = NO;
     auto view = window_.contentView;
-    auto title = label(@"Workspace shortcuts", NSMakeRect(24, height - 51, 650, 28));
-    title.font = [NSFont boldSystemFontOfSize:20];
-    [view addSubview:title];
-    [view
-        addSubview:label(@"Shortcuts follow the focused window’s display. One move per key press.",
-                         NSMakeRect(24, height - 83, 650, 24))];
-    NSMutableArray *fields = [NSMutableArray new];
-    NSMutableArray *records = [NSMutableArray new];
-    const auto addRow = [&](const char *name, const char *defaultChord, CGFloat y) {
-        const NSInteger i = fields.count;
-        [view addSubview:label(ns(name), NSMakeRect(24, y + 3, 155, 24))];
-        NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(184, y, 310, 28)];
-        field.placeholderString = @"Disabled";
-        field.toolTip = ns(std::string("Default: ") + defaultChord);
-        [fields addObject:field];
-        [view addSubview:field];
-        NSButton *record =
-            button(@"Record", NSMakeRect(504, y - 2, 88, 32), self, @selector(record:));
-        record.tag = i;
-        [records addObject:record];
-        [view addSubview:record];
-        NSButton *clear = button(@"Clear", NSMakeRect(598, y - 2, 76, 32), self, @selector(clear:));
-        clear.tag = i;
-        [view addSubview:clear];
-    };
-    for (size_t i = 0; i < workspaceRows; ++i) {
-        const auto &action = workspace::actionDefinitions[i];
-        addRow(action.label, action.defaultChord, height - 133 - i * 42);
-    }
-    switcherEnabled_ = [NSButton checkboxWithTitle:@"Enable window switcher" target:nil action:nil];
-    switcherEnabled_.frame = NSMakeRect(24, 235 + extraHeight, 430, 26);
-    [view addSubview:switcherEnabled_];
-    for (size_t i = 0; i < switcher::shortcutActions.size(); ++i) {
-        const auto &action = switcher::shortcutActions[i];
-        addRow(action.label, action.defaultChord, 196 + extraHeight - i * 42);
-    }
-    fields_ = fields;
-    recordButtons_ = records;
-    [view addSubview:label(@"Window scope", NSMakeRect(24, 157, 155, 24))];
-    switcherScope_ = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(184, 154, 310, 28)
-                                                pullsDown:NO];
-    [switcherScope_ addItemsWithTitles:@[ @"Current desktop", @"All desktops" ]];
-    [view addSubview:switcherScope_];
+    auto scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 154, 700, height - 154)];
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers = YES;
+    scroll.drawsBackground = NO;
+    scroll.documentView = form_->view();
+    [view addSubview:scroll];
     message_ = label(@"Loading…", NSMakeRect(24, 94, 650, 48));
     message_.textColor = NSColor.secondaryLabelColor;
     [view addSubview:message_];
@@ -194,19 +157,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
                 message_.stringValue = ns(e.what());
             }
         }
-        for (size_t i = 0; i < workspaceRows; ++i)
-            fields_[i].stringValue = ns(config.shortcuts[i].text());
-        for (size_t i = 0; i < switcher::shortcutActions.size(); ++i)
-            fields_[workspaceRows + i].stringValue = ns(config.switcher.shortcuts[i].text());
-        for (NSUInteger i = 0; i < fields_.count; ++i) {
-            fields_[i].enabled = editable_;
-            recordButtons_[i].enabled = editable_;
-        }
-        switcherEnabled_.state =
-            config.switcher.enabled ? NSControlStateValueOn : NSControlStateValueOff;
-        [switcherScope_
-            selectItemAtIndex:config.switcher.scope == switcher::Scope::AllDesktops ? 1 : 0];
-        switcherEnabled_.enabled = switcherScope_.enabled = editable_;
+        form_->load(config, editable_);
         save_.enabled = editable_;
     });
 }
@@ -216,17 +167,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     [self endRecording];
     std::string text;
     try {
-        WorkspaceChords chords;
-        for (size_t i = 0; i < workspaceRows; ++i)
-            chords[i] = fields_[i].stringValue.UTF8String;
-        auto options = parseConfig(original_).switcher;
-        options.enabled = switcherEnabled_.state == NSControlStateValueOn;
-        options.scope = switcherScope_.indexOfSelectedItem == 1 ? switcher::Scope::AllDesktops
-                                                                : switcher::Scope::CurrentDesktop;
-        for (size_t i = 0; i < switcher::shortcutActions.size(); ++i)
-            options.shortcuts[i] =
-                switcher::parseShortcut(fields_[workspaceRows + i].stringValue.UTF8String);
-        text = editedConfig(original_, chords, options);
+        text = editedConfig(original_, form_->read());
     } catch (const std::exception &e) {
         message_.stringValue = ns(e.what());
         return;
@@ -262,11 +203,13 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
             return;
         }
         token_ = reply.values[0];
-        message_.stringValue = recordingRow_ >= static_cast<NSInteger>(workspaceRows)
-                                   ? @"Press a modifier with Tab, Space, a letter, or another key. "
-                                      "Escape cancels."
-                                   : @"Press Control / Shift / Option / Command with ← or →. "
-                                      "Escape cancels.";
+        message_.stringValue =
+            std::get<ShortcutSetting>(form_->definition(recordingRow_).editor).kind ==
+                    ShortcutSetting::Kind::Switcher
+                ? @"Press a modifier with Tab, Space, a letter, or another key. "
+                   "Escape cancels."
+                : @"Press Control / Shift / Option / Command with ← or →. "
+                   "Escape cancels.";
         [window_ makeFirstResponder:window_];
         timer_ = [NSTimer scheduledTimerWithTimeInterval:0.1
                                                  repeats:YES
@@ -303,7 +246,8 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     }
     if (token_.empty())
         return YES;
-    if (recordingRow_ >= static_cast<NSInteger>(workspaceRows)) {
+    if (std::get<ShortcutSetting>(form_->definition(recordingRow_).editor).kind ==
+        ShortcutSetting::Kind::Switcher) {
         unsigned modifiers = 0;
         if (event.modifierFlags & NSEventModifierFlagControl)
             modifiers |= switcher::Control;
@@ -345,7 +289,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
 - (void)acceptChord:(NSString *)chord {
     if (recordingRow_ < 0)
         return;
-    fields_[recordingRow_].stringValue = chord;
+    form_->shortcutField(recordingRow_).stringValue = chord;
     [self endRecording];
     message_.stringValue = @"Shortcut recorded. Save to apply it.";
 }
@@ -362,7 +306,7 @@ NSButton *button(NSString *text, NSRect frame, id target, SEL action) {
     if (!editable_)
         return;
     [self endRecording];
-    fields_[sender.tag].stringValue = @"";
+    form_->shortcutField(sender.tag).stringValue = @"";
 }
 - (void)openConfig:(id)sender {
     if (!configPath_.empty())

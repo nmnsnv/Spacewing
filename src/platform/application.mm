@@ -15,6 +15,7 @@ using namespace spacewing;
 - (void)showSettings:(id)sender;
 - (void)reloadConfig:(id)sender;
 - (void)showAccessibility:(id)sender;
+- (void)showPreviewAccess:(id)sender;
 @end
 @implementation SpacewingDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
@@ -41,6 +42,18 @@ using namespace spacewing;
 - (void)showAccessibility:(id)sender {
     if (!openAccessibilitySettings())
         setStatus("Cannot open System Settings. Open Privacy & Security > Accessibility manually.");
+}
+- (void)showPreviewAccess:(id)sender {
+    // Request from the resident app so permission belongs to its bundle identity.
+    if (@available(macOS 12.3, *)) {
+        if (!CGPreflightScreenCaptureAccess())
+            CGRequestScreenCaptureAccess();
+        if (![NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:
+                @"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]])
+            setStatus("Open System Settings > Privacy & Security > Screen Recording to enable previews.");
+    } else {
+        setStatus("Live window previews require macOS 12.3 or later.");
+    }
 }
 @end
 
@@ -161,6 +174,11 @@ void setMenu(const std::function<void()> &settings, const std::function<void()> 
                                                     keyEquivalent:@""];
     accessibility.target = delegate;
     [menu addItem:accessibility];
+    NSMenuItem *previews = [[NSMenuItem alloc] initWithTitle:@"Window Preview Access…"
+                                                   action:@selector(showPreviewAccess:)
+                                            keyEquivalent:@""];
+    previews.target = delegate;
+    [menu addItem:previews];
     NSMenuItem *reloadItem = [[NSMenuItem alloc] initWithTitle:@"Reload Config"
                                                         action:@selector(reloadConfig:)
                                                  keyEquivalent:@""];

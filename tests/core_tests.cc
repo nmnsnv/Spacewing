@@ -1,5 +1,6 @@
 #include "command.h"
 #include "config/config.h"
+#include "config/schema.h"
 #include "executor.h"
 #include "ipc/socket.h"
 #include <algorithm>
@@ -64,9 +65,33 @@ void arguments() {
 }
 void configuration() {
     const auto defaults = parseConfig(defaultConfig());
-    const auto packagedText = readFile(
-        (std::filesystem::path(__FILE__).parent_path().parent_path() / "resources/default.toml")
-            .string());
+    for (const auto &section : settingsSchema()) {
+        for (const auto &setting : section.settings) {
+            check(settingValue(setting, defaults) == settingDefault(setting),
+                  "generated defaults include every registered setting");
+            auto changed = defaults;
+            std::visit(Visit{
+                [&](const ShortcutSetting &) {
+                    setSettingValue(setting, changed, std::string{});
+                },
+                [&](const ToggleSetting &editor) {
+                    setSettingValue(setting, changed, !editor.defaultValue);
+                },
+                [&](const ChoiceSetting &editor) {
+                    for (const auto &choice : editor.choices) {
+                        setSettingValue(setting, changed, choice.value);
+                        const auto roundTrip = parseConfig(editedConfig(defaultConfig(), changed));
+                        check(settingValue(setting, roundTrip) == SettingValue{choice.value},
+                              "every declared choice round-trips through the shared serializer");
+                    }
+                }
+            }, setting.editor);
+            const auto roundTrip = parseConfig(editedConfig(defaultConfig(), changed));
+            check(roundTrip.shortcuts == changed.shortcuts && roundTrip.switcher == changed.switcher,
+                  "the common serializer covers every setting without losing other fields");
+        }
+    }
+    const auto packagedText = readFile(SPACEWING_DEFAULT_CONFIG_PATH);
     const auto packaged = parseConfig(packagedText);
     check(packaged.shortcuts == defaults.shortcuts && packaged.switcher == defaults.switcher,
           "packaged default configuration matches the registered action defaults");
@@ -104,12 +129,34 @@ void configuration() {
     check(defaults.switcher.shortcuts[0].text() == "option+tab", "switcher default shortcut");
     check(defaults.switcher.shortcuts[1].text() == "option+grave", "current-app shortcut default");
     check(partial.switcher == switcher::Options{}, "legacy configs inherit switcher defaults");
+    check(defaults.switcher.layout == switcher::Layout::Grid &&
+              packaged.switcher.layout == switcher::Layout::Grid,
+          "generated and packaged config use the compact preview grid by default");
+    const auto listSource = source + "\n[switcher]\nlayout='list' # Keep layout note\n";
+    auto listOptions = parseConfig(listSource).switcher;
+    check(listOptions.layout == switcher::Layout::List,
+          "configuration can select the original list layout");
+    check(parseConfig(editedConfig(listSource, values)).switcher == listOptions,
+          "desktop shortcut edits preserve the configured layout");
+    listOptions.scope = switcher::Scope::AllDesktops;
+    const auto listEdit = editedConfig(listSource, values, listOptions);
+    check(parseConfig(listEdit).switcher == listOptions &&
+              listEdit.find("Keep layout note") != std::string::npos,
+          "Settings edits preserve the list layout and its comment");
+    const auto gridEdit = editedConfig(listSource, values, defaults.switcher);
+    check(parseConfig(gridEdit).switcher.layout == switcher::Layout::Grid &&
+              gridEdit.find("Keep layout note") != std::string::npos,
+          "layout changes round-trip without losing comments");
+    check(parseConfig(editedConfig(source, values, listOptions)).switcher == listOptions,
+          "saving can add the list layout to a legacy config");
     auto all = parseConfig("[shortcuts]\n[switcher]\nenabled=false\nscope='all-desktops'\n");
     check(!all.switcher.enabled && all.switcher.scope == switcher::Scope::AllDesktops,
           "switcher file settings");
     for (auto value :
          {"switcher=true\n[shortcuts]", "[shortcuts]\n[switcher]\nenabled='yes'",
           "[shortcuts]\n[switcher]\nscope='all'", "[shortcuts]\n[switcher]\nscope=1",
+          "[shortcuts]\n[switcher]\nlayout='tiles'", "[shortcuts]\n[switcher]\nlayout=true",
+          "[shortcuts]\n[switcher]\nlayout=1", "[shortcuts]\n[switcher]\nlayout=''",
           "[shortcuts]\n[switcher]\nshortcut=1", "[shortcuts]\n[switcher]\nshortcut='tab'",
           "[shortcuts]\n[switcher]\nshortcut='option+up'",
           "[shortcuts]\n[switcher]\nshortcut='option+escape'",

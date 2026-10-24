@@ -1,5 +1,6 @@
 #include "config.h"
 #include "command.h"
+#include "schema.h"
 #include "toml.hpp"
 
 #include <algorithm>
@@ -27,61 +28,56 @@ auto document(const std::string &text) {
 
 std::string defaultConfig() {
     std::ostringstream text;
-    text << "# Spacewing: native macOS Spaces. Empty strings disable shortcuts.\n[shortcuts]\n";
-    for (const auto &action : actionDefinitions)
-        text << action.setting << " = \"" << action.defaultChord << "\"\n";
-    text << "\n[switcher]\nenabled = true\n";
-    for (const auto &action : switcher::shortcutActions)
-        text << action.setting << " = \"" << action.defaultChord << "\"\n";
-    text << "scope = \"current-desktop\"\n";
+    text << "# Spacewing: native macOS Spaces. Empty strings disable shortcuts.\n";
+    for (const auto &section : settingsSchema()) {
+        text << "\n[" << section.key << "]\n";
+        for (const auto &setting : section.settings) {
+            text << "# " << setting.label << "\n" << setting.key << " = ";
+            const auto value = settingDefault(setting);
+            text << std::visit([](const auto &item) { return toml::format(toml::value(item)); },
+                               value);
+            text << "\n";
+        }
+    }
     return text.str();
 }
 
 Config parseConfig(const std::string &text) {
-    auto root = document(text);
+    const auto root = document(text);
+    const auto schema = settingsSchema();
     for (const auto &[key, value] : root.as_table())
-        if (key != "shortcuts" && key != "switcher")
+        if (std::none_of(schema.begin(), schema.end(),
+                         [&](const auto &section) { return section.key == key; }))
             throw Error("Unknown setting: " + key, 78);
-    if (!root.contains("shortcuts") || !root.at("shortcuts").is_table())
-        throw Error("Config requires a [shortcuts] table", 78);
-    auto &table = root.at("shortcuts").as_table();
-    for (const auto &[key, value] : table) {
-        if (std::find(actionNames.begin(), actionNames.end(), key) == actionNames.end())
-            throw Error("Unknown shortcut action: " + key, 78);
-        if (!value.is_string())
-            throw Error("Shortcut " + key + " must be a string", 78);
-    }
     Config config{};
-    if (root.contains("switcher")) {
-        const auto &settings = root.at("switcher");
-        if (!settings.is_table())
-            throw Error("[switcher] must be a table", 78);
-        for (const auto &[key, value] : settings.as_table()) {
-            const auto action =
-                std::find_if(switcher::shortcutActions.begin(), switcher::shortcutActions.end(),
-                             [&](const auto &item) { return key == item.setting; });
-            if (action != switcher::shortcutActions.end()) {
-                if (!value.is_string())
-                    throw Error("switcher." + key + " must be a string", 78);
-                try {
-                    config.switcher.shortcuts[action - switcher::shortcutActions.begin()] =
-                        switcher::parseShortcut(value.as_string());
-                } catch (const std::invalid_argument &e) {
-                    throw Error(e.what(), 78);
-                }
-            } else if (key == "enabled") {
-                if (!value.is_boolean())
-                    throw Error("switcher.enabled must be a boolean", 78);
-                config.switcher.enabled = value.as_boolean();
-            } else if (key == "scope") {
-                if (!value.is_string() ||
-                    (value.as_string() != "current-desktop" && value.as_string() != "all-desktops"))
-                    throw Error("switcher.scope must be current-desktop or all-desktops", 78);
-                config.switcher.scope = value.as_string() == "all-desktops"
-                                            ? switcher::Scope::AllDesktops
-                                            : switcher::Scope::CurrentDesktop;
-            } else {
-                throw Error("Unknown switcher setting: " + key, 78);
+    for (const auto &section : schema) {
+        if (!root.contains(section.key)) {
+            if (section.required)
+                throw Error("Config requires a [" + section.key + "] table", 78);
+        } else {
+            const auto &table = root.at(section.key);
+            if (!table.is_table())
+                throw Error("[" + section.key + "] must be a table", 78);
+            for (const auto &[key, value] : table.as_table())
+                if (std::none_of(section.settings.begin(), section.settings.end(),
+                                 [&](const auto &setting) { return setting.key == key; }))
+                    throw Error("Unknown setting: " + section.key + "." + key, 78);
+        }
+        for (const auto &setting : section.settings) {
+            auto value = settingDefault(setting, true);
+            if (root.contains(section.key) && root.at(section.key).contains(setting.key)) {
+                const auto &raw = root.at(section.key).at(setting.key);
+                if (raw.is_string())
+                    value = std::string(raw.as_string());
+                else if (raw.is_boolean())
+                    value = raw.as_boolean();
+                else
+                    throw Error("Invalid value type for " + section.key + "." + setting.key, 78);
+            }
+            try {
+                setSettingValue(setting, config, value);
+            } catch (const Error &error) {
+                throw Error(section.key + "." + error.what(), error.code);
             }
         }
     }
@@ -92,10 +88,6 @@ Config parseConfig(const std::string &text) {
     }
     std::set<Shortcut> used;
     for (size_t i = 0; i < actionNames.size(); ++i) {
-        auto it = table.find(actionNames[i]);
-        if (it == table.end())
-            continue; // Omitted actions are disabled.
-        config.shortcuts[i] = parseShortcut(it->second.as_string());
         if (config.shortcuts[i].enabled() && !used.insert(config.shortcuts[i]).second)
             throw Error("Duplicate shortcut: " + config.shortcuts[i].text(), 78);
         const auto &shortcut = config.shortcuts[i];
@@ -110,44 +102,49 @@ Config parseConfig(const std::string &text) {
     return config;
 }
 
-std::string editedConfig(const std::string &original, const WorkspaceChords &chords,
-                         std::optional<switcher::Options> switcher) {
+namespace {
+std::string serializeConfig(const std::string &original, const Config &config, bool shortcutsOnly) {
     parseConfig(original);
     auto root = document(original);
-    auto &table = root.at("shortcuts");
-    for (size_t i = 0; i < actionNames.size(); ++i) {
-        auto normalized = parseShortcut(chords[i]).text();
-        if (table.contains(actionNames[i]))
-            table.at(actionNames[i]).as_string() = normalized;
-        else
-            table[actionNames[i]] = normalized;
-    }
-    if (switcher) {
-        if (!root.contains("switcher"))
-            root["switcher"] = toml::table{};
-        auto &settings = root.at("switcher");
-        if (settings.contains("enabled"))
-            settings.at("enabled").as_boolean() = switcher->enabled;
-        else
-            settings["enabled"] = switcher->enabled;
-        const std::string scope =
-            switcher->scope == switcher::Scope::AllDesktops ? "all-desktops" : "current-desktop";
-        if (settings.contains("scope"))
-            settings.at("scope").as_string() = scope;
-        else
-            settings["scope"] = scope;
-        for (size_t i = 0; i < switcher::shortcutActions.size(); ++i) {
-            const auto key = switcher::shortcutActions[i].setting;
-            const auto chord = switcher->shortcuts[i].text();
-            if (settings.contains(key))
-                settings.at(key).as_string() = chord;
-            else
-                settings[key] = chord;
+    for (const auto &section : settingsSchema()) {
+        if (shortcutsOnly && section.key != "shortcuts")
+            continue;
+        if (!root.contains(section.key))
+            root[section.key] = toml::table{};
+        auto &table = root.at(section.key);
+        for (const auto &setting : section.settings) {
+            std::visit(Visit{[&](const std::string &value) {
+                                 if (table.contains(setting.key))
+                                     table.at(setting.key).as_string() = value;
+                                 else
+                                     table[setting.key] = value;
+                             },
+                             [&](bool value) {
+                                 if (table.contains(setting.key))
+                                     table.at(setting.key).as_boolean() = value;
+                                 else
+                                     table[setting.key] = value;
+                             }},
+                       settingValue(setting, config));
         }
     }
     auto result = toml::format(root);
     parseConfig(result);
     return result;
+}
+} // namespace
+
+std::string editedConfig(const std::string &original, const Config &config) {
+    return serializeConfig(original, config, false);
+}
+std::string editedConfig(const std::string &original, const WorkspaceChords &chords,
+                         std::optional<switcher::Options> switcher) {
+    auto config = parseConfig(original);
+    for (size_t i = 0; i < chords.size(); ++i)
+        config.shortcuts[i] = parseShortcut(chords[i]);
+    if (switcher)
+        config.switcher = *switcher;
+    return serializeConfig(original, config, !switcher);
 }
 
 std::string readFile(const std::string &path) {

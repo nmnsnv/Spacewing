@@ -11,6 +11,8 @@ enum class Key : unsigned {
     Tab = 48,
     Grave = 50,
     Escape = 53,
+    Left = 123,
+    Right = 124,
     Down = 125,
     Up = 126,
     Other = 0xffff

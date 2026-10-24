@@ -3,7 +3,8 @@
 A native macOS Spaces MVP: configurable shortcuts to switch desktops or carry the
 focused window with you. The engine is C++20, with Objective-C++ for AppKit and the
 native window-move bridge. An independent window-switcher package supplies an
-Option+Tab overlay. Tiling remains outside this MVP.
+Option+Tab overlay with a compact grid of live window previews. Window arrangement
+remains outside this MVP.
 
 ## Build and launch
 
@@ -24,8 +25,8 @@ entry points, configuration, IPC, Settings, and runtime wiring live under **src/
 Headers and implementations always live next to each other, including inside
 packages; there is no separate public **include/** tree.
 
-The app adds a **↔** menu-bar item with Settings, Accessibility, Reload Config,
-status, and Quit. When Accessibility access is missing, startup requests the
+The app adds a **↔** menu-bar item with Settings, Accessibility, Window Preview Access,
+Reload Config, status, and Quit. When Accessibility access is missing, startup requests the
 native macOS permission prompt. Use its **Open System Settings** button to grant
 **Spacewing.app** access, then quit and reopen the app. The **Accessibility…** menu
 item and the button in Spacewing Settings reopen the permission page if you dismiss
@@ -186,6 +187,7 @@ enabled = true
 shortcut = "option+tab"
 application_shortcut = "option+grave"
 scope = "current-desktop" # Or "all-desktops".
+layout = "grid" # Or "list" for the original icon/title list without previews.
 ~~~
 
 Every desktop action has an independent shortcut. Use Left or Right with any combination
@@ -194,8 +196,9 @@ order and letter case do not matter. Control/ctrl, alt/option, and command/cmd a
 aliases. Empty or omitted bindings are disabled. Unknown settings, duplicate chords,
 and malformed TOML are errors.
 
-The settings window lets you record or type each chord, clear bindings, and save
-to the same file. During recording, existing Spacewing shortcuts are captured
+The settings window exposes every file option: record or type shortcuts, clear
+bindings, enable window switching, and choose the window scope and layout. Save
+writes those choices to the same file. During recording, existing Spacewing shortcuts are captured
 without switching desktops. Recording ends on Escape or loss of window focus;
 a short lease also expires if the settings process disappears.
 
@@ -213,18 +216,38 @@ yourself; Spacewing does not rewrite macOS keyboard settings.
 
 ## Window switching
 
+Choose **Window layout** in Settings, or edit **~/.spacewing** under **[switcher]**:
+
+~~~toml
+layout = "grid" # Compact live previews; use "list" for the original layout.
+~~~
+
+**grid** is the default. It fits all eligible windows on screen and uses circular
+arrow navigation within each row or column. **list** restores the original app-icon
+and title list, showing up to nine rows and keeping the selection visible as you
+cycle. Up/Down move one row and wrap; Left/Right retain their original pass-through
+behavior unless assigned as a switcher shortcut. List mode does not capture windows
+or require Screen Recording access. Layout changes reload automatically and close
+an open picker; the next invocation uses the chosen layout. Saving other options in
+Settings exposes the same layout selection as the file.
+
 The active window appears first, followed by the previously focused window when
 it is eligible. Opening the switcher selects the second window (or the only window
 if there is just one). Hold **Option** and press **Tab** to open
-it. Keep Option held and use **Up/Down** to move the selector, or press Tab again to
-advance and add **Shift** to reverse. Release Option to activate the selection, or
-press **Escape** to close without activating it. Held arrows repeat; a held shortcut
-key does not repeat. The overlay shows app icons and window titles without taking
-keyboard focus. Other typing cancels the picker and passes through to the focused app.
+it. In grid mode, keep Option held and use **Left/Right** to move across columns or **Up/Down**
+to move between rows. Arrows wrap within their row or column: Up from the top
+selects the lowest occupied cell, Down returns to the top, and Left/Right wrap
+across the row. Missing cells in the final row are skipped. Press Tab again to
+cycle through all windows and add **Shift** to reverse. Release Option to activate
+the selection, or press **Escape** to close without activating it. Held arrows repeat;
+a held shortcut key does not repeat. The grid shows compact live previews, app icons, and window
+titles without taking keyboard focus. It prefers four columns and adjusts the grid
+and thumbnail size to fit all eligible windows on the pointer’s display at once.
+Other typing cancels the picker and passes through to the focused app.
 
 Hold **Option** and press **backtick** (the grave key) to switch only between windows
 of the current app. Press backtick again to advance, add **Shift** to reverse, and
-release Option to activate. Up/Down and Escape work as above. Option+Tab and
+release Option to activate. Arrow keys and Escape work as above. Option+Tab and
 Option+backtick can change the window list while Option remains held. Both use the
 configured desktop scope. Command+backtick continues to use macOS's native behavior.
 
@@ -244,18 +267,33 @@ configured chord. Neither shortcut nor its reverse chord may overlap the other
 switcher action or an enabled desktop shortcut. Omitted switcher shortcut settings
 use the defaults shown above. Clear a row in Settings or set its value to **""**
 to disable that binding. Changing a binding removes the old chord immediately;
-there are no fixed fallback shortcuts.
+there are no fixed fallback shortcuts. If Left or Right is explicitly assigned as
+a switcher shortcut, that chord keeps its cycling behavior inside the picker.
 
-This first version lists standard Accessibility windows and dialogs, excluding
+The picker lists standard Accessibility windows and dialogs, excluding
 minimized windows, desktop elements, and Spacewing's own overlay. It starts from
 WindowServer front-to-back order for windows it has not seen focused. It remembers
 windows focused when the picker opens and exact windows successfully activated by
 the switcher, ordering those by most recent use. This history lasts until the host
 exits. The list stays frozen while the shortcut modifiers are held. Separate quick
 shortcut presses alternate between the same two eligible windows even if macOS
-raises other windows in the meantime. Window previews are not supported.
-Titles come from Accessibility; no screen images are captured. Unsupported or
-unresponsive applications are skipped; discovery stops querying apps after a
+raises other windows in the meantime. Titles come from Accessibility.
+
+Live previews use ScreenCaptureKit on macOS 12.3 or later. Choose **Window Preview
+Access…** in Spacewing’s menu to request **Screen Recording** access, enable
+**Spacewing.app** in System Settings, and restart it if macOS asks. Opening the
+picker never requests permission. Without access, tiles still show app icons and
+titles and all switching controls continue to work. Older systems and windows that
+cannot be captured show a preview-unavailable fallback. Protected content or
+windows on other desktops may not supply live frames.
+
+Capture runs only while the picker is visible, stops on commit, cancellation,
+filter changes, sleep, or shutdown, and never records audio or saves frames to disk.
+Thumbnails are capped at 400×250 pixels with at most 12 updates per second per
+window; larger grids share a 60-update-per-second budget. Moving the selection
+within a grid reuses its streams. Quick taps skip capture startup.
+
+Unsupported or unresponsive applications are skipped; discovery stops querying apps after a
 two-second budget and uses the candidates found so far. A selected window that closes or leaves
 the current desktop before activation reports an error without falling back to a
 different window. In all-desktops mode, activation relies on macOS to follow the
@@ -323,14 +361,30 @@ cancellation notifications. Configuration crosses that boundary as an Options
 value. The current transport is in-process; a future separate process can supply
 an adapter without changing selection logic.
 
-Global shortcut dispatch is configuration-driven. Workspace action definitions in
-**packages/workspace/src/types.h** and switcher action definitions in
-**packages/switcher/src/shortcut.h** declare each setting, Settings label, and default
-chord. Configuration parsing, default generation, Settings rows, and serialization
-iterate those definitions; the switcher CLI and input dispatcher use the same schema.
-The keyboard handler starts with no bindings and receives only validated configuration.
-Settings exchanges complete TOML documents with the resident, preserving comments and
-checking for concurrent edits, so new actions need no extra positional IPC fields.
+All file settings and window controls share one typed registry in
+[src/config/schema.cc](src/config/schema.cc). The TOML parser accepts only registered
+keys. Each entry requires a Settings label and a supported editor type: shortcut,
+checkbox, or choice. Choice values and their labels are declared together. The
+parser, defaults, serializer, and [Settings form](src/platform/settings_form.mm)
+iterate this same registry; there is no separate list of visible settings or manual
+per-setting UI mapping. Adding a registered setting automatically adds its control,
+load/save binding, and default-file entry. Adding an editor type requires updating
+the exhaustive UI and persistence visitors before the code can compile. Invalid
+schema metadata fails default-file generation during the build.
+
+Workspace action definitions in **packages/workspace/src/types.h** and switcher
+action definitions in **packages/switcher/src/shortcut.h** supply the registry's
+shortcut keys, labels, and defaults. Those definitions also drive native dispatch
+and the standalone hosts. The keyboard handler starts with no bindings and receives
+only validated configuration. The packaged **build/resources/default.toml** is
+generated from the registry; there is no separately maintained default config.
+
+Settings rows are laid out from the registry inside a scroll view, so additional
+options stay reachable on small displays. Settings exchanges complete TOML documents
+with the resident, preserving comments and checking for concurrent edits; new
+options need no extra positional IPC fields. The native form test iterates every
+registered setting and verifies its actual control, every declared choice, and
+file round-trips after edits. Keep this shared path when adding settings.
 
 CMake enforces the dependencies through **Spacewing::Workspace**,
 **Spacewing::Switcher**, and **Spacewing::SharedMacOS** targets. Portable types are
@@ -355,6 +409,8 @@ ctest --test-dir build-switcher --output-on-failure
 # Choose another shortcut in the standalone host.
 ./build-switcher/spacewing-switcher --shortcut ctrl+space
 ./build-switcher/spacewing-switcher --application-shortcut cmd+grave
+# Request preview permission for the standalone host, then restart it.
+./build-switcher/spacewing-switcher --preview-access
 ~~~
 
 The standalone workspace build produces its libraries and tests. The minimal
@@ -378,7 +434,7 @@ The app must already be running. Add the build directory to your shell's PATH or
 ./build/spacewing reload
 ./build/spacewing list
 ./build/spacewing doctor
-./build/spacewing check-config --config resources/default.toml
+./build/spacewing check-config --config build/resources/default.toml
 ~~~
 
 Both config flag forms work before or after a command. Without the flag, a client
@@ -443,7 +499,8 @@ unavailable Accessibility focus, move/follow/focus failures, removal of source
 membership before following fullscreen moves, fullscreen window rejection, and
 the bounded action queue. Switcher tests cover
 active-window-first ordering, second-item selection,
-cycling, wrapping, arrow navigation, configurable shortcuts, current-app filtering,
+cycling, wrapping, circular spatial arrow navigation and partial-row handling, grids with 1–100
+windows across different screen sizes, configurable shortcuts, current-app filtering,
 mixed-mode queued gestures, commit/cancel, held keys,
 modifier release order, host blocking, repeated two-window toggling despite reordered
 snapshots, queued gestures, exact focus acknowledgments, and cancellation/failure
@@ -451,8 +508,13 @@ history retention. Configuration tests cover every registered action's defaults,
 remapping, disabling, conflicts (including reverse chords), and Settings/comment
 retention. Exhaustive key/modifier checks ensure an unconfigured or cleared switcher
 cannot intercept hidden bindings.
-The IPC integration test uses temporary local sockets. Tests never post gestures
-or move windows.
+Settings form tests verify a matching editable control for every registered file
+setting, every dropdown choice, shortcut recorder tags, and file round-trips.
+Native preview tests check layout, highlight updates, and cancellation without
+taking focus. A separate live-capture test uses only its own temporary window and
+skips when Screen Recording access has not already been granted. Neither test
+requests permission. The IPC integration test uses temporary local sockets. Tests
+never post gestures or move existing windows.
 
 The integrated release build, standalone workspace and switcher builds, and their
 non-interactive test suites pass on this development host, including IPC integration when run with
@@ -480,7 +542,7 @@ The following checks cover live behavior beyond the automated suite:
    report an error without moving anything.
 
 9. Open two windows of one app and another app. Confirm the active window is first
-   and opening selects the second item. Check Up/Down, held arrows, repeated Tab,
+   and opening selects the second item. Check all four arrows, held arrows, repeated Tab,
    Shift+Tab, Option release before Tab release, and Escape without focus changing.
    Check quick taps while discovery is pending and close the selected window before
    releasing Option. Change the switcher shortcut in Settings and in the config;
@@ -496,6 +558,18 @@ The following checks cover live behavior beyond the automated suite:
     Change scope and enabled state through both Settings and the file, including
     while the picker is open. Record a desktop shortcut while Option+Tab is held.
     Check sleep/wake, permission revocation, and an unresponsive app.
+11. Open enough windows for several grid rows and a partially filled final row.
+    Verify all tiles fit on a small display, Left/Right wrap within a row, and
+    Up/Down wrap within their column. Check both one-window and current-app grids.
+    Enable Window Preview Access, restart if requested, and confirm that typing,
+    scrolling, or video updates the previews. Check the fallback with access denied
+    or revoked, and verify capture stops after release, Escape, scope changes, and
+    sleep. Repeated quick switches must not reopen a closed overlay or show stale
+    frames from a previous window list.
+12. Set **switcher.layout = "list"**, confirm the original icon/title rows and
+    Up/Down cycling, then switch back to **"grid"** and check spatial navigation.
+    Change layouts while the picker is open and confirm it closes and releases
+    capture. Save another option in Settings and confirm the layout is preserved.
 
 The earlier desktop-only AddressSanitizer/UndefinedBehaviorSanitizer build compiled,
 but its runs stalled during initialization, including a trivial program before main.

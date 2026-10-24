@@ -10,4 +10,6 @@
     <key>CFBundleVersion</key><string>@PROJECT_VERSION@</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Show live previews of windows while you choose a window to switch to.</string>
 </dict></plist>
